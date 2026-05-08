@@ -1,0 +1,12 @@
+resources:
+  jobs:
+    setup_lakebase_project:
+      name: "datacart-data-centric :: setup_lakebase_project"
+      description: "Idempotently creates (or finds) the Lakebase Autoscaling project for the data-centric workshop."
+      tasks:
+        - task_key: setup_lakebase_project
+          notebook_task:
+            notebook_path: ../notebooks/setup_lakebase_project.py
+            base_parameters:
+              lakebase_project: ${var.lakebase_project}
+              pg_version: ${var.pg_version}
