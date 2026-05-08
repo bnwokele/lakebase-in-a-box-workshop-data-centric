@@ -4,29 +4,9 @@ bundle:
 include:
   - resources/*.yml
 
-variables:
-  lakebase_project:
-    description: "Lakebase Autoscaling project name (provisioned by setup_lakebase_project job)"
-    default: "datacart-data-centric"
-  endpoint_name:
-    description: "Full Lakebase endpoint path"
-    default: "projects/datacart-data-centric/branches/production/endpoints/primary"
-  db_schema:
-    description: "Postgres schema for the storefront tables"
-    default: "ecommerce"
-  pg_version:
-    description: "Postgres major version for the Lakebase project"
-    default: "17"
-
 targets:
   dev:
     default: true
     mode: development
     workspace:
-      profile: fe-vm-ben
-
-  workshop:
-    mode: production
-    workspace:
-      profile: fe-vm-ben
-      root_path: /Workspace/Users/benjamin.nwokeleme@databricks.com/.bundle/${bundle.name}/${bundle.target}
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

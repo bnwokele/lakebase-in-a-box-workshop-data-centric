@@ -69,66 +69,85 @@ A customer-facing e-commerce web application (React + FastAPI) that **evolves in
 
 ### Step 1: Deploy the Storefront and Lakebase Project via DABs
 
-The `datacart-storefront/` folder is a Databricks Asset Bundle that deploys the app, the Lakebase Autoscaling project, and the setup job in one shot.
+The `datacart-storefront/` folder is a Databricks Asset Bundle. A single `bundle deploy` provisions:
 
-**Before deploying**, update the target environments in `databricks.yml` to match your workspace:
+- The **Lakebase Autoscaling project** (declared as a native `postgres_projects` DAB resource — see [docs](https://docs.databricks.com/aws/en/oltp/projects/manage-with-bundles))
+  - Configured for cost efficiency: **0.5–2 CU autoscaling** with **300s scale-to-zero** timeout
+  - PG 17, 7-day PITR retention window
+  - Project ID auto-derived from the deploying user's workspace ID (e.g. `lakebase-workshop-6530815146371371`) so multiple attendees can deploy into one workspace without colliding
+- The **DataCart Storefront app** (`datacart-storefront`)
+  - Source code path points at the bundle's workspace upload location (`${workspace.file_path}`)
+  - Connection details (`LAKEBASE_PROJECT`, `ENDPOINT_NAME`, `DB_SCHEMA`) injected via the app's `config.env`
 
-```yaml
-# datacart-storefront/databricks.yml — update the profile in each target to your CLI profile
-targets:
-  dev:
-    default: true
-    mode: development
-    workspace:
-      profile: <your-profile>    # ← Change this to your CLI profile
+> **Why two parts?** Lakebase Autoscaling doesn't have native Databricks Apps binding yet (it's on the roadmap). The app discovers the Lakebase host at runtime via the SDK using the injected `ENDPOINT_NAME`, then generates short-lived OAuth tokens — see `datacart-storefront/server/db.py`.
 
-  workshop:
-    mode: production
-    workspace:
-      profile: <your-profile>    # ← Change this to your CLI profile
-      root_path: /Workspace/Users/<your-email>/.bundle/${bundle.name}/${bundle.target}
+The target's `root_path` is also derived from `${workspace.current_user.userName}`, so each attendee gets their own bundle deploy path with **zero manual configuration**.
+
+#### Option A: Deploy from the workspace UI (recommended for workshop attendees)
+
+Prerequisites:
+- The repo is added to your workspace as a **Databricks Git folder** (Workspace → click your home folder → Add → Git folder → paste the repo URL)
+- **Workspace files** and **serverless compute** are enabled in your workspace (admin settings)
+
+**1. Deploy the bundle:**
+
+1. In the workspace, navigate to your Git folder → `lakebase-in-a-box-workshop-data-centric` → `datacart-storefront`.
+2. Click `databricks.yml` to open it in the editor.
+3. Click the **deployments icon** in the top-right of the editor.
+4. In the **Deployments** pane, choose target **`dev`** and click **Deploy**.
+5. Review the **Deploy to dev** confirmation dialog and click **Deploy** again.
+
+This creates the Lakebase project (with autoscaling settings) and the app shell, and uploads the app source code to:
 ```
+/Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files/
+```
+That `.bundle/.../files/` location is what the app reads from at runtime.
 
-> **How to find your profile**: Run `databricks auth profiles` to list available profiles.
-> If you haven't set one up, run `databricks auth login --host <workspace-url> --profile <profile-name>` first.
+**2. Start the app + push the source:**
 
-Then deploy and provision:
+Clicking ▶ run on the app in the Bundle resources pane only **starts the compute**; it doesn't push the source. To push the source AND start the app, do one of:
+
+- **(Recommended)** From a local terminal: `cd datacart-storefront && databricks bundle run datacart_storefront --profile <your-profile>`
+- **OR** From the workspace: navigate to **Compute → Apps → datacart-storefront → Deploy** button. Set the source path to `/Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files` and click Deploy.
+
+After source deployment, the app status moves to `RUNNING` and the URL becomes accessible. The app will show "Loading…" until you grant the service principal database access in Lab 2.1.
+
+#### Option B: Deploy from your local terminal (CLI)
+
+Prerequisites:
+- Databricks CLI v0.229.0+ installed
+- A profile authenticated to the target workspace (e.g., run `databricks auth login --host <workspace-url> --profile <your-profile>`)
 
 ```bash
 cd datacart-storefront
 
 # Validate the bundle
-databricks bundle validate -t workshop
+databricks bundle validate --profile <your-profile>
 
-# Deploy app + setup job to the workspace
-databricks bundle deploy -t workshop
+# Deploy the Lakebase project + the app shell + upload source files
+databricks bundle deploy --profile <your-profile>
 
-# Provision the Lakebase Autoscaling project (idempotent — safe to re-run)
-databricks bundle run setup_lakebase_project -t workshop
-
-# Start the storefront app
-databricks bundle run datacart_storefront -t workshop
+# Push the source and start the app (this is the step that actually deploys the source)
+databricks bundle run datacart_storefront --profile <your-profile>
 ```
 
-### Step 2: Confirm the Lakebase resource binding
+> If your default CLI profile already points at the right workspace, the `--profile <your-profile>` flag is optional.
 
-The first time you run an app that declares a `postgres` resource (see `app.yaml`), the Databricks Apps platform asks you to confirm which Lakebase project to bind to. Pick **`datacart-data-centric`**. After that, the platform auto-injects `PGHOST`, `PGUSER`, `PGPORT`, etc. as env vars on every restart.
+> **Where the source lives after deploy** — at `/Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files/`. That's what the app's `source_code_path` points at. Editing files in your Git folder doesn't change what the running app sees until you re-run `bundle deploy` (re-upload) and `bundle run` (re-deploy source onto the app).
 
-> **Why this matters**: Databricks Apps run as a service principal (SP). The SP needs a Postgres role in Lakebase to authenticate. Adding the database as a resource handles role creation and credential injection automatically.
-
-### Step 3: Run Lab 1.1 to seed the schema
+### Step 2: Run Lab 1.1 to seed the schema
 
 Open **`1.1 Lab - Discover and Seed the Lakebase Project`** in the workspace. This:
 
-1. Discovers the bundle-deployed Lakebase project (`datacart-data-centric`)
+1. Discovers the bundle-deployed Lakebase project (`lakebase-workshop-<your-user-id>`)
 2. Seeds 5 tables: customers, products, inventory, orders, order_items
 3. Tours `pg_catalog`, `information_schema`, and `pg_stat_statements`
 
-### Step 4: Run Lab 2.1 to grant SP permissions
+### Step 3: Run Lab 2.1 to grant SP permissions
 
 Open **`2.1 Lab - Roles Permissions and Connect Storefront`**. The storefront will show "Loading…" until this lab grants the app's service principal access to the `ecommerce` schema. Once complete, the storefront populates with products and a working cart.
 
-### Step 5: Go through the rest of the workshop!
+### Step 4: Go through the rest of the workshop!
 
 Run the remaining labs in order: 3.1 → 4.1 → 5.1 → 6.1 → 6.2 → 6.3 → 7.1 → 8 → 9.
 
@@ -284,7 +303,7 @@ GRANT ALL ON ALL TABLES IN SCHEMA ecommerce TO "<SP_CLIENT_ID>";
 ### "Loading..." forever
 - Hit `<app-url>/api/dbtest` to check connectivity.
 - If `PGHOST` shows `NOT SET`: the app was **not bound to the Lakebase project**. Open the app's
-  Resources tab and confirm the binding to `datacart-data-centric`, then click **Deploy** to restart.
+  Resources tab and confirm the binding to your Lakebase project (`lakebase-workshop-<your-user-id>`), then click **Deploy** to restart.
 - If `db_connected: false` with "password authentication failed": the database resource
   was not added, or the SP role was not auto-created. Re-bind the resource and redeploy.
 - If `db_connected: true` with `schema_error`: the SP needs schema grants — run Lab 2.1.

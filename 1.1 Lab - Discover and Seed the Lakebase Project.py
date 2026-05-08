@@ -18,17 +18,15 @@
 # MAGIC 6. **Understand** how Lakebase becomes addressable from the Lakehouse (direct connect, UC registration, Lakehouse Sync)
 # MAGIC
 # MAGIC ## What This Notebook Does
-# MAGIC 1. Discovers the Lakebase project provisioned by `databricks bundle run setup_lakebase_project`
+# MAGIC 1. Discovers the Lakebase project provisioned by `databricks bundle deploy`
 # MAGIC 2. Connects via OAuth token authentication (fully automated)
 # MAGIC 3. Seeds 5 tables with realistic e-commerce data
 # MAGIC 4. Explores PostgreSQL system metadata (`pg_catalog`, `information_schema`, `pg_stat_statements`)
 # MAGIC 5. Verifies everything is ready for the remaining workshop labs
 # MAGIC
-# MAGIC > **Setup expectation**: Before running this notebook, you (or your workshop host) ran:
-# MAGIC > ```
-# MAGIC > databricks bundle deploy -t workshop -p fe-vm-ben
-# MAGIC > databricks bundle run setup_lakebase_project -t workshop -p fe-vm-ben
-# MAGIC > ```
+# MAGIC > **Setup expectation**: Before running this notebook, the workshop's bundle has been deployed
+# MAGIC > (either from the workspace UI by clicking the deployments icon on `databricks.yml`, or from a
+# MAGIC > terminal with `databricks bundle deploy` from the `datacart-storefront/` directory).
 # MAGIC > See `WORKSHOP_SETUP.md` for the full bundle-first setup flow.
 # MAGIC
 # MAGIC > **Docs**: [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Manage branches](https://docs.databricks.com/aws/en/oltp/projects/manage-branches) | [API Reference](https://docs.databricks.com/api/workspace/postgres)
@@ -122,7 +120,7 @@
 # MAGIC
 # MAGIC ## Architecture After Setup
 # MAGIC ```
-# MAGIC Lakebase Project: datacart-data-centric        ← deployed by DAB (resources/lakebase_setup.job.yml)
+# MAGIC Lakebase Project: lakebase-workshop-<FirstName>-<LastName>   ← deployed by DAB (resources/lakebase_instance.yml)
 # MAGIC └── production (default branch)
 # MAGIC     └── ecommerce (schema)                    ← created in this lab
 # MAGIC         ├── customers    (100 rows)
@@ -149,15 +147,18 @@ dbutils.library.restartPython()
 # MAGIC The `WorkspaceClient` auto-authenticates when running inside a Databricks notebook —
 # MAGIC no tokens or secrets needed.
 # MAGIC
-# MAGIC The project name is fixed (`datacart-data-centric`) — that's the name the bundle's setup job
-# MAGIC provisions. If you need to point at a different project, run:
+# MAGIC ### Two names, one project
 # MAGIC
-# MAGIC ```
-# MAGIC databricks bundle run setup_lakebase_project -t workshop \
-# MAGIC     -p fe-vm-ben -- --lakebase_project=<your-name>
-# MAGIC ```
+# MAGIC Lakebase projects have **two names** that you'll see in different places:
 # MAGIC
-# MAGIC and update `project_name` below to match.
+# MAGIC | Name | Where you see it | What it is |
+# MAGIC |---|---|---|
+# MAGIC | **`project_id`** | SDK calls, URLs, the `project_name` variable below | Resource ID — must be lowercase + hyphens (DNS-compliant). Auto-derived from your numeric Databricks user ID, so it looks like `lakebase-workshop-6530815146371371` |
+# MAGIC | **`display_name`** | Lakebase UI, Catalog Explorer, "Lakebase Postgres" page | Human-readable label — auto-derived from your first + last name, so it looks like `Lakebase Workshop — Jane Doe` |
+# MAGIC
+# MAGIC Both refer to **the same Lakebase project**. The bundle (`datacart-storefront/resources/lakebase_instance.yml`) sets both at deploy time. The labs work with the `project_id` because that's what the API expects.
+# MAGIC
+# MAGIC > **If you see "Lakebase Workshop — Your Name" in the UI but the notebook prints `lakebase-workshop-<long-number>`, that's expected — they're the same project.**
 
 # COMMAND ----------
 
@@ -165,8 +166,9 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 
-# Bundle-deployed project — see datacart-storefront/databricks.yml
-project_name = "datacart-data-centric"
+# Bundle-deployed project — see datacart-storefront/resources/lakebase_instance.yml
+# This is the project_id (DNS-compliant, used by the SDK), not the display_name.
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
 
 # Fixed configuration
 db_schema = "ecommerce"
@@ -176,8 +178,11 @@ print(f"   Workspace: {w.config.host}")
 print(f"   User:      {w.current_user.me().user_name}")
 print(f"")
 print("📋 Configuration:")
-print(f"   Project Name:      {project_name}")
+print(f"   Project ID:        {project_name}        ← used by SDK / URLs")
 print(f"   DB Schema:         {db_schema}")
+print(f"")
+print(f"💡 In the Lakebase UI, this project shows as 'Lakebase Workshop — <your name>'.")
+print(f"   Both names point at the same project.")
 
 # COMMAND ----------
 
@@ -185,22 +190,21 @@ print(f"   DB Schema:         {db_schema}")
 # MAGIC ## Step 2: Discover the Bundle-Deployed Lakebase Project
 # MAGIC
 # MAGIC The Databricks Asset Bundle that ships with this workshop already provisioned a Lakebase
-# MAGIC Autoscaling project (see `datacart-storefront/notebooks/setup_lakebase_project.py`). In
-# MAGIC this step we **discover** that project rather than create one — that's the data-centric
-# MAGIC variant's deployment model: infrastructure-as-code first, schema work in the labs.
+# MAGIC Autoscaling project (declared in `datacart-storefront/resources/lakebase_instance.yml` as a
+# MAGIC native `postgres_projects` DAB resource). In this step we **discover** that project rather
+# MAGIC than create one — that's the data-centric variant's deployment model: infrastructure-as-code
+# MAGIC first, schema work in the labs.
 # MAGIC
-# MAGIC **What the bundle setup job did:**
-# MAGIC - Provisioned a **PostgreSQL 17** instance with autoscaling compute
-# MAGIC - Created a default **`production` branch** with a primary R/W compute endpoint
-# MAGIC - Created a **Postgres role** for your Databricks identity (the project owner)
-# MAGIC - Created a default **`databricks_postgres`** database
+# MAGIC **What `databricks bundle deploy` provisioned:**
+# MAGIC - A **PostgreSQL 17** project with **0.5–2 CU autoscaling** and **300s scale-to-zero**
+# MAGIC - A default **`production` branch** with a primary R/W compute endpoint
+# MAGIC - A **Postgres role** for your Databricks identity (the project owner)
+# MAGIC - A default **`databricks_postgres`** database
 # MAGIC
-# MAGIC If the project doesn't exist yet, run:
-# MAGIC ```
-# MAGIC databricks bundle run setup_lakebase_project -t workshop -p fe-vm-ben
-# MAGIC ```
+# MAGIC If the project doesn't exist yet, run `databricks bundle deploy` from the
+# MAGIC `datacart-storefront/` directory (or click Deploy from the workspace UI on `databricks.yml`).
 # MAGIC
-# MAGIC > **Docs:** [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/)
+# MAGIC > **Docs:** [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Manage Lakebase with bundles](https://docs.databricks.com/aws/en/oltp/projects/manage-with-bundles)
 
 # COMMAND ----------
 
@@ -214,8 +218,8 @@ project_obj = next(
 if project_obj is None:
     raise RuntimeError(
         f"Project '{project_name}' not found. Run "
-        f"'databricks bundle run setup_lakebase_project -t workshop -p fe-vm-ben' first, "
-        f"or update project_name in Step 1 to match an existing project."
+        f"'databricks bundle deploy' from the datacart-storefront/ directory first "
+        f"(or deploy via the workspace UI on databricks.yml)."
     )
 
 project_uid = project_obj.uid
@@ -369,6 +373,9 @@ else:
 # COMMAND ----------
 
 import psycopg2
+
+# Connect as the current Databricks user (the project owner)
+db_user = w.current_user.me().user_name
 
 # Generate a fresh OAuth token
 cred = w.postgres.generate_database_credential(endpoint=prod_endpoint_name)
@@ -829,26 +836,26 @@ for row in rows:
 
 # COMMAND ----------
 
-with conn.cursor() as cur:
-    cur.execute("""
-        SELECT
-            substring(query, 1, 80) AS query_excerpt,
-            calls,
-            round(total_exec_time::numeric, 2) AS total_ms,
-            round(mean_exec_time::numeric, 2) AS mean_ms,
-            rows
-        FROM pg_stat_statements
-        WHERE query NOT LIKE '%pg_stat_statements%'
-        ORDER BY total_exec_time DESC
-        LIMIT 5;
-    """)
-    rows = cur.fetchall()
+# with conn.cursor() as cur:
+#     cur.execute("""
+#         SELECT
+#             substring(query, 1, 80) AS query_excerpt,
+#             calls,
+#             round(total_exec_time::numeric, 2) AS total_ms,
+#             round(mean_exec_time::numeric, 2) AS mean_ms,
+#             rows
+#         FROM pg_stat_statements
+#         WHERE query NOT LIKE '%pg_stat_statements%'
+#         ORDER BY total_exec_time DESC
+#         LIMIT 5;
+#     """)
+#     rows = cur.fetchall()
 
-print("📋 Top 5 queries by total execution time (pg_stat_statements):")
-print(f"   {'Query (first 80 chars)':<82} {'Calls':>6} {'Total ms':>10} {'Mean ms':>8} {'Rows':>6}")
-print(f"   {'-'*82} {'-'*6} {'-'*10} {'-'*8} {'-'*6}")
-for row in rows:
-    print(f"   {row[0]:<82} {row[1]:>6} {row[2]:>10} {row[3]:>8} {row[4]:>6}")
+# print("📋 Top 5 queries by total execution time (pg_stat_statements):")
+# print(f"   {'Query (first 80 chars)':<82} {'Calls':>6} {'Total ms':>10} {'Mean ms':>8} {'Rows':>6}")
+# print(f"   {'-'*82} {'-'*6} {'-'*10} {'-'*8} {'-'*6}")
+# for row in rows:
+#     print(f"   {row[0]:<82} {row[1]:>6} {row[2]:>10} {row[3]:>8} {row[4]:>6}")
 
 # COMMAND ----------
 
@@ -1016,4 +1023,3 @@ print("=" * 60)
 # COMMAND ----------
 
 conn.close()
-

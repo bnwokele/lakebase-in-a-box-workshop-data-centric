@@ -21,12 +21,75 @@
 # MAGIC
 # MAGIC By the end of this lab, you will be able to:
 # MAGIC 1. **Explain** the difference between Synced Tables (materialized) and Lakehouse Federation (live)
-# MAGIC 2. **Create** a Unity Catalog connection to a Lakebase Autoscaling project
-# MAGIC 3. **Register** the Lakebase database as a Unity Catalog foreign catalog
-# MAGIC 4. **Run** a federated join between live OLTP data and Delta analytics data — zero ETL
-# MAGIC 5. **Reason** about when to use federation vs. Lakehouse Sync (covered in Lab 5.1)
+# MAGIC 2. **Register** a Lakebase database as a Unity Catalog foreign catalog using the Catalog Explorer UI
+# MAGIC 3. **Run** a federated join between live OLTP data and Delta analytics data from the SQL Editor
+# MAGIC 4. **Reason** about when to use federation vs. Lakehouse Sync (covered in Lab 5.1)
 # MAGIC
 # MAGIC > **Docs**: [Register a Lakebase database in Unity Catalog](https://docs.databricks.com/aws/en/oltp/projects/register-uc) | [Lakehouse Federation](https://docs.databricks.com/aws/en/query-federation/)
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC ## Why Register a Lakebase Database in Unity Catalog?
+# MAGIC
+# MAGIC Registering Lakebase in UC turns your operational database into a first-class citizen of the
+# MAGIC lakehouse — discoverable, governed, and joinable with Delta — without any data movement.
+# MAGIC
+# MAGIC | Benefit | What you get |
+# MAGIC |---|---|
+# MAGIC | **Unified governance** | UC permissions, lineage, and audit logs apply to your Lakebase data the same way they do to lakehouse data. One control plane. |
+# MAGIC | **Cross-source queries** | Query Delta and Lakebase together from a single SQL interface — combine transactional and analytical data in one statement. |
+# MAGIC | **Centralized discovery** | Browse Lakebase schemas, tables, and views in Catalog Explorer alongside everything else in the workspace. |
+# MAGIC | **Integrated workflows** | Reach Lakebase data from dashboards, AI/BI, and apps without standing up a separate connection or driver. |
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC ## How Registration Works
+# MAGIC
+# MAGIC Registration creates a **read-only Unity Catalog catalog that mirrors your Postgres database
+# MAGIC structure** — schemas, tables, and views become visible to UC's metadata layer. Queries
+# MAGIC still execute against live Lakebase compute; UC handles authorization, discovery, and
+# MAGIC governance on top.
+# MAGIC
+# MAGIC ```
+# MAGIC ┌────────────────────────────────────────┐
+# MAGIC │           Unity Catalog                │
+# MAGIC │   (governance, discovery, auditing)    │
+# MAGIC │                                        │
+# MAGIC │  catalog: lakebase_datacart  (read-only)
+# MAGIC │   └── schema: ecommerce               │
+# MAGIC │        └── tables: customers, orders…  │
+# MAGIC └─────────────┬──────────────────────────┘
+# MAGIC               │ predicate pushdown + live read
+# MAGIC               ▼
+# MAGIC ┌────────────────────────────────────────┐
+# MAGIC │      Lakebase Postgres (live OLTP)     │
+# MAGIC └────────────────────────────────────────┘
+# MAGIC ```
+# MAGIC
+# MAGIC - **Where it's initiated:** Catalog Explorer (the Lakehouse workspace), not the Lakebase project page.
+# MAGIC - **What's created:** a UC catalog backed by an internal connection that uses your Databricks identity (OAuth user-to-machine) to authenticate against Lakebase on every query.
+# MAGIC - **Where queries run:** the SQL warehouse plans the query, pushes predicates down to the Lakebase endpoint, and reads live results.
+# MAGIC - **What's mirrored:** schema/table metadata. The data itself stays in Postgres — there's no copy.
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC ## Permissions and Access Control
+# MAGIC
+# MAGIC Two permission layers operate independently — UC governs reads through warehouses, Postgres
+# MAGIC governs direct database connections.
+# MAGIC
+# MAGIC | Layer | Controls | How to grant |
+# MAGIC |---|---|---|
+# MAGIC | **Unity Catalog** | Who can browse / query the foreign catalog from a SQL warehouse, notebook, or dashboard | The user who registers the catalog becomes its owner. Grant others `USE CATALOG` + `SELECT` to let them query. Metastore admins can manage all registered catalogs. |
+# MAGIC | **Postgres roles** | Who can connect directly to the Lakebase database via the Postgres wire protocol (`psycopg`, `psql`, the storefront app's SP) | The Postgres roles and `GRANT` statements you set up in Lab 2.1. Independent from UC. |
+# MAGIC
+# MAGIC > **Key distinction.** UC permissions only protect the federated read path. If you grant a
+# MAGIC > user `SELECT` on the foreign catalog but they have no Postgres role grants, queries through
+# MAGIC > UC still work because UC connects with the *registrar's* identity, not the requester's. To
+# MAGIC > prevent direct OLTP access, manage Postgres roles in Lab 2.1's pattern.
 
 # COMMAND ----------
 
@@ -73,7 +136,8 @@ from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+# Project name is auto-derived per user from ${workspace.current_user.id}
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
 
 # Unity Catalog targets — adjust to your workspace
 UC_CATALOG = "main"           # the catalog where we'll create the Delta marketing_campaigns table
@@ -89,89 +153,57 @@ print(f"UC schema:        {UC_CATALOG}.{UC_SCHEMA}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 2: Find the Lakebase Hostname
+# MAGIC ## Step 2: Register the Foreign Catalog (Catalog Explorer UI)
 # MAGIC
-# MAGIC The UC connection needs the project's read-write hostname. Pull it from the SDK so you don't
-# MAGIC have to copy-paste from the UI.
-
-# COMMAND ----------
-
-prod_branch = next(
-    b for b in w.postgres.list_branches(parent=f"projects/{project_name}")
-    if b.status and b.status.default
-)
-endpoint = next(iter(w.postgres.list_endpoints(parent=prod_branch.name)))
-pg_host = endpoint.status.hosts.host
-pg_port = 5432
-pg_database = "databricks_postgres"
-
-print(f"Lakebase host:     {pg_host}")
-print(f"Lakebase port:     {pg_port}")
-print(f"Lakebase database: {pg_database}")
+# MAGIC We'll use the Databricks UI to register the Lakebase project as a Unity Catalog foreign
+# MAGIC catalog. This is the cleanest path — UC creates the underlying connection and catalog in
+# MAGIC one go and uses your own Databricks identity for authentication (OAuth user-to-machine).
+# MAGIC
+# MAGIC > **Docs:** [Register a Lakebase database in Unity Catalog](https://docs.databricks.com/aws/en/oltp/projects/register-uc)
+# MAGIC
+# MAGIC ### Steps in the Databricks UI
+# MAGIC
+# MAGIC 1. Use the **apps switcher** in the top-left of the workspace to switch to the **Lakehouse** workspace if you aren't already there.
+# MAGIC 2. Open **Catalog Explorer** from the sidebar.
+# MAGIC 3. Click the **+** icon next to the catalog list and select **Create a catalog**.
+# MAGIC 4. In the dialog:
+# MAGIC    - **Catalog name**: `lakebase_datacart`
+# MAGIC    - **Type**: select **Lakebase Postgres**
+# MAGIC    - **Compute**: select **Autoscaling**
+# MAGIC    - **Project**: pick your workshop project (`lakebase-workshop-<FirstName>-<LastName>`)
+# MAGIC    - **Branch**: `production`
+# MAGIC    - **Postgres database**: `databricks_postgres`
+# MAGIC 5. Click **Create**.
+# MAGIC
+# MAGIC The new catalog appears in Catalog Explorer alongside your other UC catalogs.
+# MAGIC
+# MAGIC > **Read-only by design.** The foreign catalog is read-only through Unity Catalog — writes
+# MAGIC > still go through Postgres protocol or the storefront app. UC governs reads (tags, lineage,
+# MAGIC > grants, audit logs) on the live OLTP data.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 3: Create the UC Connection (UI)
+# MAGIC ## Step 3: Smoke-Test — Live Query Against Lakebase
 # MAGIC
-# MAGIC Run the next cell in a SQL warehouse to create a Lakebase Postgres connection that uses your
-# MAGIC own Databricks identity for authentication (OAuth). Substitute `pg_host` from Step 2 if the
-# MAGIC bundled `${pg_host}` placeholder is not resolved by your warehouse.
+# MAGIC Now switch to the **SQL Editor** (sidebar → **SQL Editor**) and connect to a serverless SQL
+# MAGIC warehouse. Paste the query below. You should see the same `orders` rows you'd see if you
+# MAGIC logged into the Postgres instance directly — it's a real-time read with no copy or
+# MAGIC replication lag.
 # MAGIC
-# MAGIC > **Auth pattern:** the connection uses **OAuth user-to-machine** so each query carries the
-# MAGIC > caller's identity into Lakebase. Postgres role grants you set up in Lab 2.1 apply.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- NOTE: Replace ${pg_host} below with the host printed in Step 2 if your warehouse does
-# MAGIC -- not interpolate notebook variables.
-# MAGIC CREATE CONNECTION IF NOT EXISTS lakebase_datacart_conn
-# MAGIC TYPE postgresql
-# MAGIC OPTIONS (
-# MAGIC   host     '${pg_host}',
-# MAGIC   port     '5432',
-# MAGIC   database 'databricks_postgres',
-# MAGIC   auth_type 'OAUTH_USER_TO_MACHINE'
-# MAGIC )
-# MAGIC COMMENT 'Lakebase Autoscaling project: datacart-data-centric (created in Lab 4.1)';
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 4: Register the Foreign Catalog
+# MAGIC <br>
 # MAGIC
-# MAGIC One foreign catalog per Lakebase database. Once registered, it shows up in Catalog Explorer
-# MAGIC like any other UC catalog and is queryable from any SQL warehouse / serverless SQL.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC CREATE FOREIGN CATALOG IF NOT EXISTS lakebase_datacart
-# MAGIC USING CONNECTION lakebase_datacart_conn
-# MAGIC OPTIONS (database 'databricks_postgres')
-# MAGIC COMMENT 'Live foreign catalog into the datacart-data-centric Lakebase project';
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 5: Smoke-Test — Live Query Against Lakebase
-# MAGIC
-# MAGIC You should see the same `orders` rows you'd see if you logged into the Postgres instance
-# MAGIC directly. The query is a real-time read — no copy, no replication lag.
-
-# COMMAND ----------
-
-# MAGIC %sql
+# MAGIC ```sql
 # MAGIC SELECT order_id, customer_id, status, total
 # MAGIC FROM lakebase_datacart.ecommerce.orders
 # MAGIC ORDER BY order_id
 # MAGIC LIMIT 10;
+# MAGIC ```
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 6: The Value Moment — Federated Join with Delta Marketing Data
+# MAGIC ## Step 4: The Value Moment — Federated Join with Delta Marketing Data
 # MAGIC
 # MAGIC This is the scenario data engineers care about. We have:
 # MAGIC - **Live OLTP orders** in Lakebase (federated as `lakebase_datacart.ecommerce.orders`)
@@ -180,14 +212,45 @@ print(f"Lakebase database: {pg_database}")
 # MAGIC Without federation you'd have to ETL one into the other before joining. With federation, the
 # MAGIC SQL warehouse pushes the predicate down to Lakebase, pulls back only the matching rows, and
 # MAGIC joins them against Delta in-place.
+# MAGIC
+# MAGIC ### Pick a target catalog for the demo Delta table
+# MAGIC
+# MAGIC The federated query joins live OLTP data with a small Delta table you'll stage in Unity
+# MAGIC Catalog. Pick a UC catalog you have `CREATE SCHEMA` privileges on (`main` is the most common
+# MAGIC default; in workshops you may have a per-user catalog). Set it once below — every SQL block
+# MAGIC in this step uses it.
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC -- Stage a tiny Delta table representing marketing-team-curated campaigns.
-# MAGIC CREATE SCHEMA IF NOT EXISTS main.datacart_demo;
+# MAGIC %md
+# MAGIC **➡ Set your target catalog here, then re-run this cell.** All later queries reference `MY_CATALOG`.
+
+# COMMAND ----------
+
+# Edit this value to match the UC catalog you want to use for the demo Delta table.
+MY_CATALOG = "main"
+
+# Derived names — usually you don't need to change these.
+DEMO_SCHEMA  = f"{MY_CATALOG}.datacart_demo"
+CAMPAIGNS_TABLE = f"{DEMO_SCHEMA}.marketing_campaigns"
+
+print(f"Target catalog: {MY_CATALOG}")
+print(f"Demo schema:    {DEMO_SCHEMA}")
+print(f"Campaigns:      {CAMPAIGNS_TABLE}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC In the **SQL Editor**, run the following two queries in order. Replace `<MY_CATALOG>` with
+# MAGIC the catalog name you set above before pasting.
 # MAGIC
-# MAGIC CREATE OR REPLACE TABLE main.datacart_demo.marketing_campaigns (
+# MAGIC ### 4a. Stage a Delta table of marketing campaigns
+# MAGIC
+# MAGIC ```sql
+# MAGIC -- Stage a tiny Delta table representing marketing-team-curated campaigns.
+# MAGIC CREATE SCHEMA IF NOT EXISTS <MY_CATALOG>.datacart_demo;
+# MAGIC
+# MAGIC CREATE OR REPLACE TABLE <MY_CATALOG>.datacart_demo.marketing_campaigns (
 # MAGIC   campaign        STRING,
 # MAGIC   utm_source      STRING,
 # MAGIC   start_date      DATE,
@@ -195,24 +258,20 @@ print(f"Lakebase database: {pg_database}")
 # MAGIC   target_segment  STRING
 # MAGIC );
 # MAGIC
-# MAGIC INSERT INTO main.datacart_demo.marketing_campaigns VALUES
+# MAGIC INSERT INTO <MY_CATALOG>.datacart_demo.marketing_campaigns VALUES
 # MAGIC   ('Spring Kickoff',     'spring_email',  DATE '2026-03-01', DATE '2026-04-01', 'returning'),
 # MAGIC   ('Loyalty Push',       'loyalty_push',  DATE '2026-04-01', DATE '2026-05-15', 'loyalty'),
 # MAGIC   ('Cross-Channel Demo', 'paid_social',   DATE '2026-04-15', DATE '2026-06-01', 'new');
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### The federated query
+# MAGIC ```
+# MAGIC
+# MAGIC ### 4b. Run the federated join
 # MAGIC
 # MAGIC > **Note:** The orders table created in Lab 1.1 doesn't have a `utm_source` column by default.
 # MAGIC > For this demo we join on `customer_id` modulo the campaign array length so every order maps
 # MAGIC > to a campaign. In a real setting, an `orders.utm_source` column populated by the storefront
 # MAGIC > would replace this. The point is the *shape* of the query — federated join in one statement.
-
-# COMMAND ----------
-
-# MAGIC %sql
+# MAGIC
+# MAGIC ```sql
 # MAGIC WITH live_orders AS (
 # MAGIC   SELECT
 # MAGIC     order_id,
@@ -223,8 +282,8 @@ print(f"Lakebase database: {pg_database}")
 # MAGIC ),
 # MAGIC campaigns_indexed AS (
 # MAGIC   SELECT campaign, utm_source, ROW_NUMBER() OVER (ORDER BY campaign) - 1 AS idx,
-# MAGIC          (SELECT COUNT(*) FROM main.datacart_demo.marketing_campaigns) AS n
-# MAGIC   FROM main.datacart_demo.marketing_campaigns
+# MAGIC          (SELECT COUNT(*) FROM <MY_CATALOG>.datacart_demo.marketing_campaigns) AS n
+# MAGIC   FROM <MY_CATALOG>.datacart_demo.marketing_campaigns
 # MAGIC )
 # MAGIC SELECT
 # MAGIC   c.campaign,
@@ -236,6 +295,10 @@ print(f"Lakebase database: {pg_database}")
 # MAGIC   ON (o.customer_id % c.n) = c.idx
 # MAGIC GROUP BY c.campaign, c.utm_source
 # MAGIC ORDER BY attributed_revenue DESC;
+# MAGIC ```
+# MAGIC
+# MAGIC > **Tip:** in the SQL Editor you can run `USE CATALOG <your-catalog>;` once at the top, then
+# MAGIC > drop the catalog prefix from every reference (e.g. just `datacart_demo.marketing_campaigns`).
 
 # COMMAND ----------
 
@@ -251,20 +314,20 @@ print(f"Lakebase database: {pg_database}")
 
 # COMMAND ----------
 
-# MAGIC %md-sandbox
-# MAGIC ## Step 7: Federation vs. Lakehouse Sync — Decision Notes
+# MAGIC %md
+# MAGIC ## Limitations
 # MAGIC
-# MAGIC | Use federation (this lab) when… | Use Lakehouse Sync (Lab 5.1) when… |
-# MAGIC |---|---|
-# MAGIC | The query is ad-hoc or low-frequency | The query runs many times per minute on the same data |
-# MAGIC | The data must be live to the millisecond | Hourly or near-real-time freshness is acceptable |
-# MAGIC | You need governance (UC tags, lineage) on read | You need to run heavy aggregations without OLTP load |
-# MAGIC | The join touches small slices of OLTP | The query scans large fractions of OLTP tables |
-# MAGIC | You want zero pipeline overhead | You can pay for a sync pipeline to amortize cost |
+# MAGIC Worth keeping in mind for production planning:
 # MAGIC
-# MAGIC In production, most data-centric teams use **both**: federation for live spot-checks /
-# MAGIC governed read APIs, and Lakehouse Sync for high-throughput analytical workloads. The next
-# MAGIC lab covers the latter.
+# MAGIC | Limitation | What it means | Workaround |
+# MAGIC |---|---|---|
+# MAGIC | **Read-only through UC** | You can't `INSERT` / `UPDATE` / `DELETE` against the foreign catalog from a SQL warehouse | Writes go through Postgres protocol, the storefront app, or a Synced Tables / Lakehouse Sync pipeline (Labs 3.1 / 5.1) |
+# MAGIC | **One Postgres database per catalog** | Each foreign catalog represents a single Lakebase database | Register additional databases as separate catalogs |
+# MAGIC | **Metadata is cached** | UC caches schema metadata to reduce Postgres traffic — newly created Lakebase tables may not appear immediately | Refresh the catalog from Catalog Explorer or wait for the next cache refresh |
+# MAGIC | **Branch-scoped registration** | A registered catalog points at a specific Lakebase branch | Register each branch you want to expose as its own UC catalog |
+# MAGIC
+# MAGIC None of these block the workshop scenarios — they're things to plan for when designing a
+# MAGIC production federation strategy.
 
 # COMMAND ----------
 
@@ -278,4 +341,3 @@ print(f"Lakebase database: {pg_database}")
 # MAGIC - You ran a federated join: live OLTP × Delta marketing data, in one statement, with no ETL.
 # MAGIC - You now have a working mental model for **when to federate vs. when to sync** — the next
 # MAGIC   lab (5.1 Lakehouse Sync) is where you'll see the analytics-throughput end of that decision.
-

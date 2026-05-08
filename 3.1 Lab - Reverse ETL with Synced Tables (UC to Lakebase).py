@@ -179,11 +179,6 @@
 # MAGIC
 # MAGIC ## Hands-On: Spring Sale Promotions via Reverse ETL
 # MAGIC
-# MAGIC > **Heads up — branching cameo.** This lab uses a short-lived `dev-promotions` branch as a
-# MAGIC > staging area before promoting to production. Branching is the dedicated topic of **Lab 6.1**;
-# MAGIC > here we just lean on it lightly to demonstrate the safety pattern that data-centric users
-# MAGIC > care about: validate the sync against a copy of production before flipping the storefront over.
-# MAGIC
 # MAGIC **The Challenge:**
 # MAGIC DataCart's marketing team has prepared Spring Sale promotions in the data warehouse —
 # MAGIC product discounts, sale badges, and limited-time offers computed by analytics pipelines.
@@ -240,6 +235,11 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC For this lab, we will seed a delta table in the Lakehouse and sync that into Lakebase for our app. Please create a schema called "ecommerce" in your selected catalog. Then add the Catalog name to the cell below. 
+
+# COMMAND ----------
+
 from databricks.sdk import WorkspaceClient
 import time
 import psycopg2
@@ -247,11 +247,14 @@ import psycopg2
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+# Project name is auto-derived per user from ${workspace.current_user.id}
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # Unity Catalog configuration — set these before running
+
 UC_CATALOG = "<add-your-catalog-name-here>"
-UC_SCHEMA = "<add-your-schema-name-here>"
+UC_SCHEMA = "ecommerce"
 UC_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions"
 
 # Lakebase configuration
@@ -445,48 +448,11 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 4: Create a Branch and Sync the Promotions Table
+# MAGIC ## Step 4: Sync the Promotions Table to Production
 # MAGIC
-# MAGIC Following the branching pattern from earlier labs, we'll first sync the promotions
-# MAGIC table to a **dev branch** to verify it works before promoting to production.
-# MAGIC
-# MAGIC ### Step 4a: Create the `dev-promotions` Branch
-
-# COMMAND ----------
-
-from databricks.sdk.service.postgres import Branch, BranchSpec, Duration
-
-PROMO_BRANCH = "dev-promotions"
-
-# Get production branch
-branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
-prod_branch = next(b for b in branches if b.status and b.status.default)
-
-# Clean up from previous runs
-try:
-    w.postgres.delete_branch(name=f"projects/{project_name}/branches/{PROMO_BRANCH}").wait()
-    print(f"🧹 Cleaned up existing branch '{PROMO_BRANCH}'")
-except Exception:
-    pass
-
-print(f"🔄 Creating branch '{PROMO_BRANCH}' from production...")
-w.postgres.create_branch(
-    parent=f"projects/{project_name}",
-    branch=Branch(spec=BranchSpec(
-        source_branch=prod_branch.name,
-        ttl=Duration(seconds=172800)
-    )),
-    branch_id=PROMO_BRANCH
-).wait()
-print(f"✅ Branch '{PROMO_BRANCH}' created!")
-
-# COMMAND ----------
-
-# MAGIC %md-sandbox
-# MAGIC ### Step 4b: Create the Synced Table to the Dev Branch
-# MAGIC
-# MAGIC Now set up the **reverse ETL pipeline** that syncs the Delta table to Lakebase.
-# MAGIC This is the process described in the "Creating a Synced Table" section above.
+# MAGIC Now set up the **reverse ETL pipeline** that syncs the Delta `promotions` table directly
+# MAGIC into the production Lakebase branch. The storefront reads from production, so once the
+# MAGIC sync completes the sale badges go live.
 # MAGIC
 # MAGIC **Follow these steps in the Databricks UI:**
 # MAGIC
@@ -495,10 +461,10 @@ print(f"✅ Branch '{PROMO_BRANCH}' created!")
 # MAGIC 3. Click on the `promotions` table
 # MAGIC 4. Click **Create** > **Synced table**
 # MAGIC 5. In the dialog:
-# MAGIC    - **Table name**: input **promotions_synced_dev**
+# MAGIC    - **Table name**: input **promotions_synced_prod**
 # MAGIC    - **Database type**: Select **Lakebase Serverless (Autoscaling)**
-# MAGIC    - **Project**: Select your workshop project (`datacart-data-centric`)
-# MAGIC    - **Branch**: Select **dev-promotions**
+# MAGIC    - **Project**: Select your workshop project (`lakebase-workshop-<FirstName>-<LastName>`)
+# MAGIC    - **Branch**: Select **production**
 # MAGIC    - **Sync mode**: Select **Snapshot** (full copy, simplest for demo)
 # MAGIC    - **Primary key**: Verify `id` is selected
 # MAGIC 6. Click **Create**
@@ -521,69 +487,7 @@ print(f"✅ Branch '{PROMO_BRANCH}' created!")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 5: Verify the Sync on the Dev Branch
-# MAGIC
-# MAGIC Once the synced table is created, the `promotions` table should appear in the
-# MAGIC Lakebase `ecommerce` schema on the `dev-promotions` branch. Let's verify.
-
-# COMMAND ----------
-
-conn_branch, _, _ = connect_to_branch(PROMO_BRANCH)
-
-with conn_branch.cursor() as cur:
-    cur.execute(f"""
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = '{db_schema}' AND table_name = 'promotions_synced_dev'
-    """)
-    exists = cur.fetchone()
-
-    if exists:
-        cur.execute(f"""
-            SELECT id, product_id, badge_text, discount_pct, sale_price, is_active
-            FROM {db_schema}.promotions_synced_dev
-            WHERE is_active = true
-            ORDER BY discount_pct DESC
-        """)
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description]
-
-        print(f"✅ Synced table verified on '{PROMO_BRANCH}'! {len(rows)} active promotions:\n")
-        for row in rows:
-            r = dict(zip(cols, row))
-            print(f"   Product {r['product_id']:3d} | {r['badge_text']:14s} | -{r['discount_pct']}% | Sale: ${r['sale_price']}")
-    else:
-        print("⏳ Promotions table not found yet on the dev branch.")
-        print("   Make sure you completed Step 4b (create synced table in the UI).")
-        print("   The sync may still be in progress — wait a moment and re-run this cell.")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 6: Promote to Production
-# MAGIC
-# MAGIC The promotions look good on the dev branch. Now create **another synced table**
-# MAGIC targeting the **production** branch so the storefront can see the promotions.
-# MAGIC
-# MAGIC **Follow the same steps as Step 4b, but select the `production` branch:**
-# MAGIC
-# MAGIC 1. Navigate to **Catalog** > your catalog > schema > `promotions`
-# MAGIC 2. Click **Create** > **Synced table**
-# MAGIC 3. In the dialog:
-# MAGIC    - **Table name**: input **promotions_synced_prod**
-# MAGIC    - **Database type**: **Lakebase Serverless (Autoscaling)**
-# MAGIC    - **Project**: Your workshop project
-# MAGIC    - **Branch**: Select **production** (not dev-promotions)
-# MAGIC    - **Sync mode**: **Snapshot**
-# MAGIC    - **Primary key**: `id`
-# MAGIC 4. Click **Create** and wait for the sync to complete
-# MAGIC
-# MAGIC > This follows the same branch-first pattern from the earlier labs:
-# MAGIC > test on a branch, validate, then promote to production.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 7: Grant SP Access to the Synced Table
+# MAGIC ## Step 5: Grant SP Access to the Synced Table
 # MAGIC
 # MAGIC **This is a critical step.** Synced tables are created by the Lakebase sync pipeline —
 # MAGIC a different internal role than your user account. This means the `ALTER DEFAULT PRIVILEGES`
@@ -622,7 +526,7 @@ print(f"\n🎉 SP can now read the promotions synced table!")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 8: Verify Promotions on Production
+# MAGIC ## Step 6: Verify Promotions on Production
 
 # COMMAND ----------
 
@@ -678,7 +582,7 @@ with conn_prod.cursor() as cur:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 9: Update Promotions (Simulate Marketing Campaign Change)
+# MAGIC ## Step 7: Update Promotions (Simulate Marketing Campaign Change)
 # MAGIC
 # MAGIC The marketing team decides to add a **flash sale** on more products and increase
 # MAGIC the discount on an existing promotion. Let's update the Delta table and trigger a re-sync.
@@ -744,7 +648,7 @@ display(spark.table(UC_TABLE).orderBy("discount_pct", ascending=False))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 10: Trigger Re-Sync
+# MAGIC ## Step 8: Trigger Re-Sync
 # MAGIC
 # MAGIC For **Snapshot** mode, we need to manually trigger a refresh. For **Triggered** or
 # MAGIC **Continuous** modes, this would happen automatically — matching the sync mode
@@ -781,7 +685,7 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 11: Verify Updated Promotions in Lakebase
+# MAGIC ## Step 9: Verify Updated Promotions in Lakebase
 
 # COMMAND ----------
 
@@ -821,7 +725,7 @@ for row in rows:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 12: Cleanup (Optional)
+# MAGIC ## Step 10: Cleanup (Optional)
 # MAGIC
 # MAGIC > Uncomment to remove the synced table and Delta table.
 
@@ -857,4 +761,3 @@ for row in rows:
 # MAGIC 3. **Change Data Feed** enables incremental sync for near real-time updates
 # MAGIC 4. **Unity Catalog governance** applies — access control, lineage, and auditing on the source data
 # MAGIC 5. **Sub-10ms query latency** — Lakebase serves the synced data with OLTP-grade performance
-

@@ -4,7 +4,7 @@
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ## Direction 3 of 3: Outbound — Streaming OLTP into Delta for Analytics
+# MAGIC ## Outbound — Streaming OLTP into Delta for Analytics
 # MAGIC
 # MAGIC This is the third movement in the data-flow story. Together, the three labs map every direction
 # MAGIC of data movement between Lakebase and the lakehouse:
@@ -31,6 +31,8 @@
 # MAGIC 4. **Demonstrate** end-to-end propagation by inserting a row in Lakebase and observing it in Delta
 # MAGIC 5. **Run** an analytics query on the Delta-side data — "OLTP analytics without OLTP load"
 # MAGIC
+# MAGIC **Available as a beta feature on AWS but will be on AZURE soon!**
+# MAGIC
 # MAGIC > **Docs**: [Lakehouse Sync](https://docs.databricks.com/aws/en/oltp/projects/lakehouse-sync)
 
 # COMMAND ----------
@@ -50,15 +52,15 @@
 # MAGIC acceleration, and zero contention with the storefront.
 # MAGIC
 # MAGIC ```
-# MAGIC ┌─────────────────────────┐                  ┌──────────────────────────────┐
-# MAGIC │   Lakebase (production) │                  │    Unity Catalog (Delta)     │
-# MAGIC │  ─────────────────────  │   Lakehouse Sync │  ──────────────────────────  │
-# MAGIC │   ecommerce.orders       │ ─────────────▶ │   main.datacart_uc.orders     │
-# MAGIC │   ecommerce.customers    │      CDC         │   main.datacart_uc.customers  │
-# MAGIC │   ecommerce.order_items  │                  │   main.datacart_uc.order_items│
-# MAGIC │                         │                  │                              │
-# MAGIC │  Storefront (writes)    │                  │  BI / dashboards / ML (reads)│
-# MAGIC └─────────────────────────┘                  └──────────────────────────────┘
+# MAGIC ┌─────────────────────────┐                  ┌─────────────────────────────────┐
+# MAGIC │   Lakebase (production) │                  │      Unity Catalog (Delta)       │
+# MAGIC │  ─────────────────────  │  Lakehouse Sync  │  ──────────────────────────────  │
+# MAGIC │   ecommerce.orders      │ ──────────────▶ │  <your-catalog>.datacart_uc.orders │
+# MAGIC │   ecommerce.customers   │       CDC        │  <your-catalog>.datacart_uc.customers│
+# MAGIC │   ecommerce.order_items │                  │  <your-catalog>.datacart_uc.order_items│
+# MAGIC │                         │                  │                                  │
+# MAGIC │  Storefront (writes)    │                  │  BI / dashboards / ML (reads)    │
+# MAGIC └─────────────────────────┘                  └─────────────────────────────────┘
 # MAGIC ```
 # MAGIC
 # MAGIC The OLTP side keeps the storefront happy. The Delta side absorbs heavy analytical scans.
@@ -84,10 +86,11 @@ from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project
-project_name = "datacart-data-centric"
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
 
 # Where the synced Delta tables will land
-UC_CATALOG = "main"
+# UC_CATALOG = "<<add your catalog>>"
+UC_CATALOG = "serverless_stable_339b90_catalog"
 UC_SCHEMA = "datacart_uc"
 TABLES_TO_SYNC = ["orders", "customers", "order_items"]
 
@@ -109,7 +112,75 @@ print(f"✅ Schema {UC_CATALOG}.{UC_SCHEMA} ready")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 3: Create the Lakehouse Sync Configuration
+# MAGIC ## Step 3: Set `REPLICA IDENTITY FULL` on Source Tables
+# MAGIC
+# MAGIC Lakehouse Sync uses Postgres logical replication to capture row-level changes. For
+# MAGIC `UPDATE`s and `DELETE`s to be replicated correctly, each source table needs its
+# MAGIC **replica identity** set to `FULL` — that tells Postgres to log the entire old row in the
+# MAGIC WAL (write-ahead log), not just the primary key.
+# MAGIC
+# MAGIC Without this, Lakehouse Sync **silently skips the table**:
+# MAGIC > Tables without REPLICA IDENTITY FULL will be skipped. Run ALTER TABLE ... REPLICA IDENTITY FULL to include them.
+# MAGIC
+# MAGIC We run the `ALTER TABLE` once per table before configuring the sync. It's idempotent — safe
+# MAGIC to re-run.
+
+# COMMAND ----------
+
+# MAGIC %pip install psycopg2-binary -q
+
+# COMMAND ----------
+
+import psycopg2
+
+# Connect to the Lakebase production branch as the project owner.
+prod_branch_obj = next(
+    b for b in w.postgres.list_branches(parent=f"projects/{project_name}")
+    if b.status and b.status.default
+)
+prod_endpoint = next(iter(w.postgres.list_endpoints(parent=prod_branch_obj.name)))
+pg_host = prod_endpoint.status.hosts.host
+cred = w.postgres.generate_database_credential(endpoint=prod_endpoint.name)
+
+owner_conn = psycopg2.connect(
+    host=pg_host,
+    port=5432,
+    database="databricks_postgres",
+    user=w.current_user.me().user_name,
+    password=cred.token,
+    sslmode="require",
+)
+owner_conn.autocommit = True
+
+with owner_conn.cursor() as cur:
+    for table in TABLES_TO_SYNC:
+        cur.execute(f"ALTER TABLE ecommerce.{table} REPLICA IDENTITY FULL;")
+        print(f"✅ ecommerce.{table}: REPLICA IDENTITY FULL")
+
+    # Verify
+    cur.execute("""
+        SELECT n.nspname AS schema, c.relname AS table,
+               CASE c.relreplident
+                 WHEN 'd' THEN 'default (primary key)'
+                 WHEN 'n' THEN 'nothing'
+                 WHEN 'f' THEN 'full'
+                 WHEN 'i' THEN 'index'
+               END AS replica_identity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'ecommerce' AND c.relname = ANY(%s)
+        ORDER BY c.relname
+    """, (TABLES_TO_SYNC,))
+    print("\n📋 Replica identity per table:")
+    for row in cur.fetchall():
+        print(f"   {row[0]}.{row[1]:<15} → {row[2]}")
+
+owner_conn.close()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 4: Create the Lakehouse Sync Configuration
 # MAGIC
 # MAGIC Lakehouse Sync is configured at the project level. The cleanest way to set it up is via the
 # MAGIC Databricks UI — that's what we'll walk through here. (You can also do this via the SDK /
@@ -118,15 +189,13 @@ print(f"✅ Schema {UC_CATALOG}.{UC_SCHEMA} ready")
 # MAGIC ### UI walkthrough
 # MAGIC
 # MAGIC 1. Open **Catalog Explorer** in the sidebar.
-# MAGIC 2. Navigate to your Lakebase project: **Lakebase Postgres** → `datacart-data-centric` → **production** branch.
-# MAGIC 3. In the project page, click **Sync to Unity Catalog** (top-right of the Tables section).
-# MAGIC 4. In the dialog:
-# MAGIC    - **Target catalog:** `main`
-# MAGIC    - **Target schema:** `datacart_uc`
-# MAGIC    - **Source schema:** `ecommerce`
-# MAGIC    - **Tables to sync:** check `orders`, `customers`, `order_items`
-# MAGIC    - **Sync mode:** *Continuous* (or *Triggered* if you'd rather control when sync runs)
-# MAGIC 5. Click **Create sync**. The pipeline provisions in ~1 minute and immediately runs an
+# MAGIC 2. Navigate to your Lakebase project: **Lakebase Postgres** → `lakebase-workshop-<FirstName>-<LastName>`
+# MAGIC 3. Click the **production** branch
+# MAGIC 4. In the branch overview page, click **Lakehouse Sync** button
+# MAGIC 5. Click the start sync button on the right side of the screen
+# MAGIC 6. Fill out the dialog box that pops up:
+# MAGIC    - Pick the right **Sync mode:** *Continuous* (or *Triggered* if you'd rather control when sync runs)
+# MAGIC 7. Click **Create sync**. The pipeline provisions in ~1 minute and immediately runs an
 # MAGIC    initial snapshot.
 # MAGIC
 # MAGIC > **Permissions:** the project owner (you) automatically has the rights to create the sync.
@@ -136,151 +205,14 @@ print(f"✅ Schema {UC_CATALOG}.{UC_SCHEMA} ready")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 4: Verify the Initial Snapshot Landed in Delta
-
-# COMMAND ----------
-
-import time
-
-target_tables = [f"{UC_CATALOG}.{UC_SCHEMA}.{t}" for t in TABLES_TO_SYNC]
-
-for fq in target_tables:
-    for attempt in range(12):  # up to ~2 minutes
-        try:
-            count = spark.sql(f"SELECT COUNT(*) FROM {fq}").collect()[0][0]
-            print(f"✅ {fq}: {count} rows")
-            break
-        except Exception as e:
-            if attempt == 11:
-                print(f"❌ {fq}: still not visible — check the sync pipeline status in the UI")
-                print(f"   error: {e}")
-            else:
-                time.sleep(10)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 5: End-to-End Propagation Demo
+# MAGIC ## Step 5: Verify the Initial Snapshot Landed in Delta
 # MAGIC
-# MAGIC We'll insert a new row directly into Lakebase, then wait for Lakehouse Sync to pick it up and
-# MAGIC land it on the Delta side. This proves the loop is closed.
+# MAGIC Navigate to the target location and view the tables now synced from Lakebase into Lakehouse!
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### 5a. Connect to Lakebase
-
-# COMMAND ----------
-
-# MAGIC %pip install psycopg2-binary -q
-
-# COMMAND ----------
-
-import psycopg2
-import time
-
-# Find the production endpoint
-prod_branch = next(
-    b for b in w.postgres.list_branches(parent=f"projects/{project_name}")
-    if b.status and b.status.default
-)
-endpoint = next(iter(w.postgres.list_endpoints(parent=prod_branch.name)))
-pg_host = endpoint.status.hosts.host
-
-# Generate an OAuth token
-cred = w.postgres.generate_database_credential(endpoint=endpoint.name)
-
-conn = psycopg2.connect(
-    host=pg_host,
-    port=5432,
-    database="databricks_postgres",
-    user=w.current_user.me().user_name,
-    password=cred.token,
-    sslmode="require",
-)
-conn.autocommit = True
-print(f"✅ Connected to Lakebase production via {pg_host}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 5b. Insert a New Order
-
-# COMMAND ----------
-
-import uuid
-
-probe_marker = f"sync-probe-{uuid.uuid4().hex[:8]}"
-
-with conn.cursor() as cur:
-    cur.execute("""
-        INSERT INTO ecommerce.orders (customer_id, status, total)
-        VALUES (1, %s, 19.99)
-        RETURNING order_id, status, total;
-    """, (probe_marker,))
-    row = cur.fetchone()
-
-print(f"✅ Inserted order_id={row[0]}, status={row[1]}, total={row[2]}")
-print(f"   Marker (in status field): {probe_marker}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 5c. Watch the Row Land in Delta
-
-# COMMAND ----------
-
-target_orders = f"{UC_CATALOG}.{UC_SCHEMA}.orders"
-
-for attempt in range(30):  # up to ~5 minutes
-    rows = spark.sql(
-        f"SELECT order_id, status, total FROM {target_orders} WHERE status = '{probe_marker}'"
-    ).collect()
-    if rows:
-        print(f"✅ Found probe order in {target_orders} after ~{attempt * 10}s:")
-        for r in rows:
-            print(f"   order_id={r['order_id']} status={r['status']} total={r['total']}")
-        break
-    print(f"   not yet visible (attempt {attempt + 1}/30)…")
-    time.sleep(10)
-else:
-    print(f"❌ Probe order didn't appear in Delta after 5 minutes — check sync pipeline status.")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 6: The Analytics Moment — OLTP Analytics Without OLTP Load
-# MAGIC
-# MAGIC Now the fun part. You can run heavy analytical aggregations against the Delta replica and pay
-# MAGIC zero cost on the OLTP side. The storefront keeps serving customers; the analyst gets full
-# MAGIC photon performance.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT
-# MAGIC   customer_id,
-# MAGIC   COUNT(*)               AS orders,
-# MAGIC   ROUND(SUM(total), 2)   AS lifetime_revenue,
-# MAGIC   ROUND(AVG(total), 2)   AS avg_order_value
-# MAGIC FROM main.datacart_uc.orders
-# MAGIC GROUP BY customer_id
-# MAGIC ORDER BY lifetime_revenue DESC
-# MAGIC LIMIT 10;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC > **Cost test:** run an `EXPLAIN` on the same logical query against the foreign catalog
-# MAGIC > (`lakebase_datacart.ecommerce.orders` from Lab 4.1). You'll see the federated plan pushes a
-# MAGIC > full scan + aggregation down to Lakebase — fine for ad-hoc, expensive at scale. The Delta
-# MAGIC > version above runs entirely on the SQL warehouse with photon. Same data, very different
-# MAGIC > resource profile. **That tradeoff is the entire reason Lakehouse Sync exists.**
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 7: What Happens When Lakebase Schemas Change?
+# MAGIC ## What Happens When Lakebase Schemas Change?
 # MAGIC
 # MAGIC In Labs 6.2 (Schema Migration) and 6.3 (Branch Reset) you'll add new columns to `customers`
 # MAGIC and `orders` on the Lakebase side. Lakehouse Sync handles schema evolution:
@@ -290,12 +222,30 @@ else:
 # MAGIC - **Renamed columns** are treated as drop + add; rename through migration tooling explicitly
 # MAGIC   to avoid that.
 # MAGIC
-# MAGIC In Lab 6.2, after applying the migration, come back and re-query `main.datacart_uc.customers`
-# MAGIC — the new `loyalty_points` column will appear in Delta with no extra work on your side.
+# MAGIC In Lab 6.2, after applying the migration, come back and re-query the synced `customers` table
+# MAGIC under `<your-catalog>.datacart_uc` — the new `loyalty_points` column will appear in Delta with
+# MAGIC no extra work on your side.
 # MAGIC
 # MAGIC In Lab 7.1 (PITR), if you DROP `orders` on Lakebase, the sync pipeline pauses and reports an
 # MAGIC error. After PITR recovery, restart the pipeline if it gave up. The Delta side stays
 # MAGIC consistent with the post-recovery Lakebase state.
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC ## Federation vs. Lakehouse Sync — Decision Notes
+# MAGIC
+# MAGIC | Use federation when… | Use Lakehouse Sync (this lab) when… |
+# MAGIC |---|---|
+# MAGIC | The query is ad-hoc or low-frequency | The query runs many times per minute on the same data |
+# MAGIC | The data must be live to the millisecond | Hourly or near-real-time freshness is acceptable |
+# MAGIC | You need governance (UC tags, lineage) on read | You need to run heavy aggregations without OLTP load |
+# MAGIC | The join touches small slices of OLTP | The query scans large fractions of OLTP tables |
+# MAGIC | You want zero pipeline overhead | You can pay for a sync pipeline to amortize cost |
+# MAGIC
+# MAGIC In production, most data-centric teams use **both**: federation for live spot-checks /
+# MAGIC governed read APIs, and Lakehouse Sync for high-throughput analytical workloads. The next
+# MAGIC lab covers the latter.
 
 # COMMAND ----------
 
@@ -316,4 +266,3 @@ else:
 # COMMAND ----------
 
 conn.close()
-

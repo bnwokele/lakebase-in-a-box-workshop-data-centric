@@ -81,7 +81,8 @@ from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # Look up the app to find its service principal
 APP_NAME = "datacart-storefront"

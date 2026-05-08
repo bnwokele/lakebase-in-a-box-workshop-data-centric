@@ -10,8 +10,6 @@
 # MAGIC >    query — federation reads live, so there is no propagation delay.
 # MAGIC > 2. The **Lakehouse Sync** pipeline from Lab 5.1 evolves the Delta target schema on its next
 # MAGIC >    sync cycle.
-# MAGIC >
-# MAGIC > We'll verify both at the end of this lab.
 # MAGIC
 # MAGIC This lab also introduces two important branch management features: **Schema Diff** for comparing branches before migration, and **Branch Reset** for refreshing branches from their parent.
 # MAGIC
@@ -135,7 +133,9 @@ import psycopg2
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+# Project name is auto-derived per user from ${workspace.current_user.id}
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # List branches — the default 'production' branch should exist
 branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
@@ -535,49 +535,6 @@ print(f"✅ Seeded {len(reviews)} product reviews on production!")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cross-Flow Verification: How Did the Migration Reach UC?
-# MAGIC
-# MAGIC The schema change is now live on the production branch. Let's confirm both downstream paths
-# MAGIC saw it.
-# MAGIC
-# MAGIC ### A. Foreign catalog (Lab 4.1) — should reflect the new column immediately
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- The new loyalty_points column appears in the federated catalog on the next query.
-# MAGIC -- (Run from a SQL warehouse, or via the same warehouse you used in Lab 4.1.)
-# MAGIC SELECT customer_id, name, loyalty_points
-# MAGIC FROM lakebase_datacart.ecommerce.customers
-# MAGIC ORDER BY customer_id
-# MAGIC LIMIT 10;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### B. Lakehouse Sync (Lab 5.1) — Delta side picks up the new column on next sync
-# MAGIC
-# MAGIC If the sync is in *Continuous* mode you should see the new column within a minute or two.
-# MAGIC If you set it to *Triggered*, run the sync now from the Lakebase project page.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT customer_id, name, loyalty_points
-# MAGIC FROM main.datacart_uc.customers
-# MAGIC ORDER BY customer_id
-# MAGIC LIMIT 10;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC > **If `loyalty_points` is missing from the Delta side**, the pipeline didn't pick up the
-# MAGIC > schema change yet. Open the Lakehouse Sync pipeline (Catalog Explorer → Lakebase project →
-# MAGIC > Sync) and click **Refresh** to evolve the target schema.
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Step 6: Cleanup — Delete the Feature Branch
 # MAGIC
 # MAGIC The feature branch has served its purpose. You can safely delete it, or let TTL handle it.
@@ -627,4 +584,3 @@ print(f"✅ Seeded {len(reviews)} product reviews on production!")
 # MAGIC - **Migration Replay** — the pattern of testing DDL on a branch and replaying it on production
 # MAGIC
 # MAGIC **Next:** In Lab 6.3, we'll explore **Branch Reset** hands-on, and in Lab 7.1, **Point-in-Time Recovery**.
-

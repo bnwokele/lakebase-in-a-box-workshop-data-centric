@@ -271,7 +271,8 @@ from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
 
 # Bundle-deployed project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # Bundle-deployed app (datacart-storefront/resources/datacart_storefront.app.yml)
 APP_NAME = "datacart-storefront"
@@ -334,37 +335,81 @@ print(f"   Host: {prod_host}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 3: Verify the SP Role Exists
+# MAGIC ## Step 3: Grant the SP Project-Level Access + Create Its Postgres Role
 # MAGIC
-# MAGIC When you added the Lakebase project as an app resource (Workshop Setup Step 4),
-# MAGIC the Lakebase OAuth system should have auto-created a Postgres role for the SP.
-# MAGIC Let's confirm.
+# MAGIC Two grants are needed before the storefront can connect:
+# MAGIC
+# MAGIC | Grant | Layer | What it enables |
+# MAGIC |---|---|---|
+# MAGIC | `CAN_USE` on the Lakebase project | Databricks platform | The SP can `list_projects()` / `list_endpoints()` and generate OAuth credentials |
+# MAGIC | A Postgres role tied to the SP's identity | Postgres | The SP has a database-level identity to authenticate as |
+# MAGIC
+# MAGIC On Lakebase Provisioned, binding a database to an app via the Apps platform auto-creates
+# MAGIC both. Lakebase Autoscaling doesn't have that native binding yet, so we do both with two
+# MAGIC explicit calls — one Databricks Permissions API call, one SQL call.
+# MAGIC
+# MAGIC > **Docs:** [Grant user access tutorial](https://docs.databricks.com/aws/en/oltp/projects/grant-user-access-tutorial)
+
+# COMMAND ----------
+
+# Grant the app's SP CAN_USE on the Lakebase project (Databricks-side permission).
+# This lets the SP list projects/endpoints and request OAuth tokens.
+# NOTE: the Permissions API for "database-projects" identifies the project by its
+# project_id (the human-readable name), NOT the UUID.
+try:
+    w.api_client.do(
+        "PATCH",
+        f"/api/2.0/permissions/database-projects/{project_name}",
+        body={
+            "access_control_list": [
+                {
+                    "service_principal_name": SP_CLIENT_ID,
+                    "permission_level": "CAN_USE",
+                }
+            ]
+        },
+    )
+    print(f"✅ Granted CAN_USE on project to SP {SP_CLIENT_ID}")
+except Exception as e:
+    print(f"⚠️  Could not set project permission via SDK: {e}")
+    print(f"   You can grant it manually: open the Lakebase project's Settings → Project Permissions → add the SP with CAN_USE.")
 
 # COMMAND ----------
 
 with conn.cursor() as cur:
-    cur.execute(f"""
+    # Make sure the databricks_auth extension is installed (idempotent).
+    cur.execute("CREATE EXTENSION IF NOT EXISTS databricks_auth;")
+
+    # Check if the role already exists (re-run safety).
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (SP_CLIENT_ID,))
+    if cur.fetchone():
+        print(f"ℹ️  SP role '{SP_CLIENT_ID}' already exists — skipping create.")
+    else:
+        # Create the Postgres role tied to the app's service principal identity.
+        cur.execute(
+            "SELECT databricks_create_role(%s, 'SERVICE_PRINCIPAL')",
+            (SP_CLIENT_ID,)
+        )
+        print(f"✅ Created SP Postgres role '{SP_CLIENT_ID}'")
+
+    # Verify
+    cur.execute("""
         SELECT r.rolname, r.rolcanlogin
         FROM pg_roles r
-        WHERE r.rolname = '{SP_CLIENT_ID}'
-    """)
+        WHERE r.rolname = %s
+    """, (SP_CLIENT_ID,))
     role_info = cur.fetchone()
 
 if role_info:
-    print(f"✅ SP role exists in Postgres:")
+    print(f"\n📋 Verified SP role:")
     print(f"   Role name: {role_info[0]}")
     print(f"   Can login: {role_info[1]}")
 else:
-    print(f"❌ SP role '{SP_CLIENT_ID}' NOT found!")
-    print(f"")
-    print(f"   This means the app resource was not added correctly.")
-    print(f"   Go to Compute > Apps > {APP_NAME} > Settings:")
-    print(f"   1. Click 'Add Resource'")
-    print(f"   2. Select 'Database'")
-    print(f"   3. Choose your Lakebase project")
-    print(f"   4. Grant 'Can connect' permission")
-    print(f"   5. Save and redeploy the app")
-    print(f"   6. Re-run this cell")
+    raise RuntimeError(
+        f"SP role '{SP_CLIENT_ID}' could not be created. "
+        f"Check that you have CAN_MANAGE on the Lakebase project "
+        f"and that the databricks_auth extension is available."
+    )
 
 # COMMAND ----------
 
@@ -549,52 +594,52 @@ for m in memberships:
 
 # COMMAND ----------
 
-import time
+# import time
 
-all_branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
+# all_branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
 
-granted_count = 0
-for branch in all_branches:
-    branch_id = branch.name.split("/branches/")[-1]
-    if branch_id == "production":
-        continue  # Already done above
+# granted_count = 0
+# for branch in all_branches:
+#     branch_id = branch.name.split("/branches/")[-1]
+#     if branch_id == "production":
+#         continue  # Already done above
 
-    try:
-        branch_endpoints = list(w.postgres.list_endpoints(parent=branch.name))
-        if not branch_endpoints:
-            print(f"   Skipping {branch_id} (no endpoint)")
-            continue
+#     try:
+#         branch_endpoints = list(w.postgres.list_endpoints(parent=branch.name))
+#         if not branch_endpoints:
+#             print(f"   Skipping {branch_id} (no endpoint)")
+#             continue
 
-        branch_host = branch_endpoints[0].status.hosts.host
-        branch_endpoint_name = branch_endpoints[0].name
-        branch_cred = w.postgres.generate_database_credential(endpoint=branch_endpoint_name)
+#         branch_host = branch_endpoints[0].status.hosts.host
+#         branch_endpoint_name = branch_endpoints[0].name
+#         branch_cred = w.postgres.generate_database_credential(endpoint=branch_endpoint_name)
 
-        branch_conn = psycopg2.connect(
-            host=branch_host, port=5432,
-            dbname="databricks_postgres",
-            user=db_user, password=branch_cred.token,
-            sslmode="require"
-        )
-        branch_conn.autocommit = True
+#         branch_conn = psycopg2.connect(
+#             host=branch_host, port=5432,
+#             dbname="databricks_postgres",
+#             user=db_user, password=branch_cred.token,
+#             sslmode="require"
+#         )
+#         branch_conn.autocommit = True
 
-        with branch_conn.cursor() as cur:
-            sp_role = f'"{SP_CLIENT_ID}"'
-            cur.execute(f"GRANT USAGE ON SCHEMA {DB_SCHEMA} TO {sp_role};")
-            cur.execute(f"GRANT ALL ON ALL TABLES IN SCHEMA {DB_SCHEMA} TO {sp_role};")
-            cur.execute(f"GRANT ALL ON ALL SEQUENCES IN SCHEMA {DB_SCHEMA} TO {sp_role};")
-            cur.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {DB_SCHEMA} GRANT ALL ON TABLES TO {sp_role};")
-            cur.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {DB_SCHEMA} GRANT ALL ON SEQUENCES TO {sp_role};")
+#         with branch_conn.cursor() as cur:
+#             sp_role = f'"{SP_CLIENT_ID}"'
+#             cur.execute(f"GRANT USAGE ON SCHEMA {DB_SCHEMA} TO {sp_role};")
+#             cur.execute(f"GRANT ALL ON ALL TABLES IN SCHEMA {DB_SCHEMA} TO {sp_role};")
+#             cur.execute(f"GRANT ALL ON ALL SEQUENCES IN SCHEMA {DB_SCHEMA} TO {sp_role};")
+#             cur.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {DB_SCHEMA} GRANT ALL ON TABLES TO {sp_role};")
+#             cur.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {DB_SCHEMA} GRANT ALL ON SEQUENCES TO {sp_role};")
 
-        branch_conn.close()
-        print(f"   ✅ Granted SP roles on branch: {branch_id}")
-        granted_count += 1
-    except Exception as e:
-        print(f"   ❌ Failed on {branch_id}: {e}")
+#         branch_conn.close()
+#         print(f"   ✅ Granted SP roles on branch: {branch_id}")
+#         granted_count += 1
+#     except Exception as e:
+#         print(f"   ❌ Failed on {branch_id}: {e}")
 
-if granted_count == 0:
-    print("ℹ️ No dev branches found (only production). This is expected before Labs 3.1-3.4.")
-else:
-    print(f"\n✅ Granted roles on {granted_count} branch(es)")
+# if granted_count == 0:
+#     print("ℹ️ No dev branches found (only production). This is expected before Labs 3.1-3.4.")
+# else:
+#     print(f"\n✅ Granted roles on {granted_count} branch(es)")
 
 # COMMAND ----------
 
@@ -640,4 +685,3 @@ conn.close()
 # MAGIC
 # MAGIC > The `ALTER DEFAULT PRIVILEGES` grants ensure the SP can access new tables
 # MAGIC > created in later labs without needing to re-run this notebook.
-

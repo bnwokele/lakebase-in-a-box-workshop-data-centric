@@ -4,11 +4,6 @@
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC With the data flows from Labs 3.1, 4.1, and 5.1 in place, we now turn to the question every
-# MAGIC data engineer asks once OLTP is part of the platform: **how do I evolve the schema safely
-# MAGIC without breaking the apps and analytics pipelines that depend on it?** The next four labs
-# MAGIC (6.1–7.1) cover Lakebase's answer.
-# MAGIC
 # MAGIC This lab introduces **Lakebase Autoscaling Branching** — a key feature that brings the agility
 # MAGIC of code branching (branches, PRs, CI/CD) to your database. You'll learn the concepts behind
 # MAGIC branching and apply them hands-on by simulating three developers working in parallel on
@@ -229,7 +224,9 @@ import psycopg2
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+# Project name is auto-derived per user from ${workspace.current_user.id}
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # List branches — the default 'production' branch should exist
 branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
@@ -927,4 +924,3 @@ print("=" * 60)
 # MAGIC - **Per-developer setup** — the branching strategy pattern in action
 # MAGIC
 # MAGIC **Next:** In Lab 6.2, we'll promote Developer A's changes to production using the **Migration Replay** pattern, and explore the **Schema Diff** tool.
-

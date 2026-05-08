@@ -205,7 +205,9 @@ import psycopg2
 w = WorkspaceClient()
 
 # Bundle-deployed Lakebase project (datacart-storefront/databricks.yml)
-project_name = "datacart-data-centric"
+# Project name is auto-derived per user from ${workspace.current_user.id}
+project_name = f"lakebase-workshop-{w.current_user.me().id}"
+db_user = w.current_user.me().user_name
 
 # List branches — the default 'production' branch should exist
 branches = list(w.postgres.list_branches(parent=f"projects/{project_name}"))
@@ -472,35 +474,7 @@ print("   Revenue: $0 | Orders: 0 | Customer orders page: broken")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### A. UC foreign catalog (Lab 4.1) — expect failure
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- This query reads live from Lakebase. With the `orders` table dropped, it should fail with
-# MAGIC -- something like 'relation "orders" does not exist'.
-# MAGIC SELECT COUNT(*) FROM lakebase_datacart.ecommerce.orders;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### B. Lakehouse Sync (Lab 5.1) — expect pipeline error
-# MAGIC
-# MAGIC Open Catalog Explorer → your Lakebase project → **Sync** tab. The pipeline tracking the
-# MAGIC dropped table will be in an **ERROR** state. The Delta-side table itself still has rows
-# MAGIC (the previously-synced ones) but no new updates can land until production heals.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- The Delta replica is read-only and untouched by the disaster — so this still works,
-# MAGIC -- but the data is frozen at the last successful sync before the DROP.
-# MAGIC SELECT COUNT(*), MAX(order_id) FROM main.datacart_uc.orders;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC > **Why this matters.** Federation and sync respond to the outage in *different* ways:
+# MAGIC > Federation and sync respond to the outage in *different* ways:
 # MAGIC > - Federation breaks immediately on every query — there is no copy.
 # MAGIC > - Sync goes stale but its already-replicated data remains queryable in Delta.
 # MAGIC >
@@ -724,43 +698,6 @@ print("=" * 60)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cross-Flow Recovery: Did Federation and Sync Heal Themselves?
-# MAGIC
-# MAGIC Production's `orders` table is back. Now check the downstream flows.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### A. UC foreign catalog — should work again immediately
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT COUNT(*) AS order_count
-# MAGIC FROM lakebase_datacart.ecommerce.orders;
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### B. Lakehouse Sync — pipeline should resume on its own
-# MAGIC
-# MAGIC Open Catalog Explorer → Lakebase project → **Sync**. The pipeline that errored during the
-# MAGIC outage typically re-attempts and clears the error within a minute or two of `orders` being
-# MAGIC available. **If it's stuck in ERROR**, click the pipeline and hit **Resume** — schema
-# MAGIC reconciliation requires that one push.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC > **Takeaway for data-centric teams.** Lakebase's recovery primitives don't just protect
-# MAGIC > the OLTP database — they protect the entire data fabric you've built around it. Both the
-# MAGIC > federated catalog (live read) and the synced Delta replica recovered automatically (or with
-# MAGIC > one click) once production was healthy. That's the architectural payoff of having Lakebase
-# MAGIC > inside the lakehouse instead of as a bolted-on external system.
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Step 9: Re-apply Post-Recovery Migrations
 # MAGIC
 # MAGIC PITR restored the data, but the schema is from an earlier point in time. Any migrations
@@ -876,4 +813,3 @@ print(f"\n🎉 Production is fully restored with ALL features!")
 # MAGIC 3. **Zero-copy snapshots** — the PITR branch doesn't duplicate data, it references the historical state
 # MAGIC 4. **Non-destructive recovery** — you verify data on the branch before touching production
 # MAGIC 5. **Record timestamps proactively** — monitoring and alerting help identify the right recovery point
-
