@@ -236,7 +236,9 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC For this lab, we will seed a delta table in the Lakehouse and sync that into Lakebase for our app. Please create a schema called "ecommerce" in your selected catalog. Then add the Catalog name to the cell below. 
+# MAGIC For this lab we'll seed a Delta table in the Lakehouse and sync it into Lakebase for the
+# MAGIC storefront. Set your target catalog below — the lab creates the `ecommerce` schema inside
+# MAGIC it for you (you just need `CREATE SCHEMA` privileges on the catalog).
 
 # COMMAND ----------
 
@@ -251,8 +253,7 @@ w = WorkspaceClient()
 project_name = f"lakebase-workshop-{w.current_user.me().id}"
 db_user = w.current_user.me().user_name
 
-# Unity Catalog configuration — set these before running
-
+# Unity Catalog configuration — set the catalog before running
 UC_CATALOG = "<add-your-catalog-name-here>"
 UC_SCHEMA = "ecommerce"
 UC_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions"
@@ -260,8 +261,12 @@ UC_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions"
 # Lakebase configuration
 db_schema = "ecommerce"
 
+# Create the ecommerce schema in the chosen catalog (idempotent).
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {UC_CATALOG}.{UC_SCHEMA}")
+
 print(f"✅ SDK initialized")
 print(f"   User:         {w.current_user.me().user_name}")
+print(f"   UC Schema:    {UC_CATALOG}.{UC_SCHEMA} (created if missing)")
 print(f"   UC Table:     {UC_TABLE}")
 print(f"   Lakebase:     {project_name}")
 
