@@ -69,7 +69,7 @@ A customer-facing e-commerce web application (React + FastAPI) that **evolves in
 
 ### Step 1: Deploy the Storefront and Lakebase Project via DABs
 
-The `datacart-storefront/` folder is a Databricks Asset Bundle. A single `bundle deploy` provisions:
+The `datacart-storefront/` folder is a Declarative Automation Bundle. A single `bundle deploy` provisions:
 
 - The **Lakebase Autoscaling project** (declared as a native `postgres_projects` DAB resource — see [docs](https://docs.databricks.com/aws/en/oltp/projects/manage-with-bundles))
   - Configured for cost efficiency: **0.5–2 CU autoscaling** with **300s scale-to-zero** timeout
