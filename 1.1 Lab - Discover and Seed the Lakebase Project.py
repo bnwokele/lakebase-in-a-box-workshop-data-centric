@@ -3,7 +3,7 @@
 # MAGIC # Lab 1.1: Discover and Seed the Lakebase Autoscaling Project
 # MAGIC
 # MAGIC This notebook gives you a hands-on tour of the Lakebase Autoscaling project that the workshop's
-# MAGIC Databricks Asset Bundle has already provisioned for you. You'll discover the project, connect via
+# MAGIC Declarative Automation Bundle has already provisioned for you. You'll discover the project, connect via
 # MAGIC OAuth, seed an e-commerce schema, and explore Postgres system metadata — the same metadata your
 # MAGIC analytics tooling will see once we register Lakebase in Unity Catalog (Lab 4.1).
 # MAGIC
@@ -11,7 +11,7 @@
 # MAGIC
 # MAGIC By the end of this lab, you will be able to:
 # MAGIC 1. **Explain** what a Lakebase Autoscaling project is and how it differs from Lakebase Provisioned
-# MAGIC 2. **Discover** an existing Lakebase project provisioned by a Databricks Asset Bundle
+# MAGIC 2. **Discover** an existing Lakebase project provisioned by a Declarative Automation Bundle
 # MAGIC 3. **Connect** to a Lakebase database using OAuth token authentication
 # MAGIC 4. **Create and populate** PostgreSQL tables using native PL/pgSQL with features like SERIAL keys and constraints
 # MAGIC 5. **Explore PostgreSQL system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements`
@@ -189,7 +189,7 @@ print(f"   Both names point at the same project.")
 # MAGIC %md
 # MAGIC ## Step 2: Discover the Bundle-Deployed Lakebase Project
 # MAGIC
-# MAGIC The Databricks Asset Bundle that ships with this workshop already provisioned a Lakebase
+# MAGIC The Declarative Automation Bundle that ships with this workshop already provisioned a Lakebase
 # MAGIC Autoscaling project (declared in `datacart-storefront/resources/lakebase_instance.yml` as a
 # MAGIC native `postgres_projects` DAB resource). In this step we **discover** that project rather
 # MAGIC than create one — that's the data-centric variant's deployment model: infrastructure-as-code
@@ -1011,7 +1011,7 @@ print("=" * 60)
 # MAGIC
 # MAGIC **Key accomplishments:**
 # MAGIC - **Learned** what Lakebase Autoscaling is, its key features (autoscaling, branching, scale-to-zero, point-in-time restore), and how it differs from Lakebase Provisioned
-# MAGIC - **Discovered** the Lakebase PostgreSQL 17 project provisioned by the workshop's Databricks Asset Bundle
+# MAGIC - **Discovered** the Lakebase PostgreSQL 17 project provisioned by the workshop's Declarative Automation Bundle
 # MAGIC - **Connected** using OAuth token-based authentication — no passwords needed
 # MAGIC - **Created and populated** 5 PostgreSQL tables with realistic e-commerce data, using native PL/pgSQL features (SERIAL keys, CHECK constraints, foreign keys, cascading deletes)
 # MAGIC - **Explored system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements` — confirming Lakebase is standard PostgreSQL

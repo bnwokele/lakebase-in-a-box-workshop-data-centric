@@ -6,7 +6,7 @@
 # MAGIC
 # MAGIC ## When to use this notebook
 # MAGIC
-# MAGIC The default workshop path uses Databricks Asset Bundles (DABs) to provision the Lakebase
+# MAGIC The default workshop path uses Declarative Automation Bundles (DABs) to provision the Lakebase
 # MAGIC Autoscaling project — see `WORKSHOP_SETUP.md` and `databricks-storefront/databricks.yml`.
 # MAGIC `bundle deploy` creates the project, the storefront app, and the binding between them in
 # MAGIC one shot. **That's the recommended path.**

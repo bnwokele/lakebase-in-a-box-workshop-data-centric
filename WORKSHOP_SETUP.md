@@ -2,7 +2,7 @@
 
 ## Overview
 
-This setup guide is for the **data-centric** workshop variant. It uses Databricks Asset Bundles
+This setup guide is for the **data-centric** workshop variant. It uses Declarative Automation Bundles
 (DABs) to deploy both the DataCart Storefront app and the Lakebase Autoscaling project before
 labs start, so workshop time isn't burned on UI clicks.
 

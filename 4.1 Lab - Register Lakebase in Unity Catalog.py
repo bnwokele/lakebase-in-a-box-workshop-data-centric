@@ -184,6 +184,63 @@ print(f"UC schema:        {UC_CATALOG}.{UC_SCHEMA}")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Alternative: Register the foreign catalog programmatically
+# MAGIC
+# MAGIC The UI flow above is the easiest way to do it once, but you'll want a code-based path for
+# MAGIC CI/CD or repeatable demos. The cell below uses SQL DDL (executed via `spark.sql`) to do the
+# MAGIC same thing the Catalog Explorer dialog did — create a UC connection backed by your Lakebase
+# MAGIC project, then create the foreign catalog from it.
+# MAGIC
+# MAGIC > **Pick one path or the other** — don't run both, or you'll get "already exists" errors
+# MAGIC > (the `IF NOT EXISTS` guards below make re-runs safe regardless).
+# MAGIC
+# MAGIC > **Why two DDL statements?** UC foreign catalogs always sit on top of a *connection*. The
+# MAGIC > UI hides this — you fill in a single dialog and UC creates both behind the scenes.
+
+# COMMAND ----------
+
+# Look up the production endpoint's hostname for your bundle-deployed Lakebase project.
+# We need this for the CREATE CONNECTION DDL.
+prod_branch = next(
+    b for b in w.postgres.list_branches(parent=f"projects/{project_name}")
+    if b.status and b.status.default
+)
+pg_endpoint = next(iter(w.postgres.list_endpoints(parent=prod_branch.name)))
+pg_host = pg_endpoint.status.hosts.host
+
+print(f"Lakebase host: {pg_host}")
+print(f"Connection:    {CONNECTION_NAME}")
+print(f"Catalog:       {FOREIGN_CATALOG}")
+
+# COMMAND ----------
+
+# Create the UC connection (backed by Lakebase, OAuth user-to-machine auth).
+spark.sql(f"""
+    CREATE CONNECTION IF NOT EXISTS {CONNECTION_NAME}
+    TYPE postgresql
+    OPTIONS (
+      host '{pg_host}',
+      port '5432',
+      database 'databricks_postgres',
+      auth_type 'OAUTH_USER_TO_MACHINE'
+    )
+    COMMENT 'Lakebase Autoscaling project: {project_name} (Lab 4.1)'
+""")
+print(f"✅ Connection '{CONNECTION_NAME}' ready")
+
+# Create the foreign catalog backed by that connection.
+spark.sql(f"""
+    CREATE FOREIGN CATALOG IF NOT EXISTS {FOREIGN_CATALOG}
+    USING CONNECTION {CONNECTION_NAME}
+    OPTIONS (database 'databricks_postgres')
+    COMMENT 'Live foreign catalog into the {project_name} Lakebase project'
+""")
+print(f"✅ Foreign catalog '{FOREIGN_CATALOG}' ready")
+print(f"\nQuery it from any SQL warehouse: SELECT * FROM {FOREIGN_CATALOG}.ecommerce.orders LIMIT 5;")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Step 3: Smoke-Test — Live Query Against Lakebase
 # MAGIC
 # MAGIC Now switch to the **SQL Editor** (sidebar → **SQL Editor**) and connect to a serverless SQL
