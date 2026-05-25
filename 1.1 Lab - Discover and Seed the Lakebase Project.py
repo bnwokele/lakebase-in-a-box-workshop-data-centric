@@ -2,32 +2,30 @@
 # MAGIC %md
 # MAGIC # Lab 1.1: Discover and Seed the Lakebase Autoscaling Project
 # MAGIC
-# MAGIC This notebook gives you a hands-on tour of the Lakebase Autoscaling project that the workshop's
-# MAGIC Declarative Automation Bundle has already provisioned for you. You'll discover the project, connect via
-# MAGIC OAuth, seed an e-commerce schema, and explore Postgres system metadata — the same metadata your
-# MAGIC analytics tooling will see once we register Lakebase in Unity Catalog (Lab 4.1).
+# MAGIC This notebook gives you a hands-on tour of your Lakebase Autoscaling project. You'll discover
+# MAGIC the project, connect via OAuth, seed an e-commerce schema, and explore Postgres system
+# MAGIC metadata — the same metadata your analytics tooling will see once we register Lakebase in
+# MAGIC Unity Catalog (Lab 4.1).
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC
 # MAGIC By the end of this lab, you will be able to:
 # MAGIC 1. **Explain** what a Lakebase Autoscaling project is and how it differs from Lakebase Provisioned
-# MAGIC 2. **Discover** an existing Lakebase project provisioned by a Declarative Automation Bundle
+# MAGIC 2. **Discover** your Lakebase project in the workspace
 # MAGIC 3. **Connect** to a Lakebase database using OAuth token authentication
 # MAGIC 4. **Create and populate** PostgreSQL tables using native PL/pgSQL with features like SERIAL keys and constraints
 # MAGIC 5. **Explore PostgreSQL system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements`
 # MAGIC 6. **Understand** how Lakebase becomes addressable from the Lakehouse (direct connect, UC registration, Lakehouse Sync)
 # MAGIC
 # MAGIC ## What This Notebook Does
-# MAGIC 1. Discovers the Lakebase project provisioned by `databricks bundle deploy`
+# MAGIC 1. Discovers your Lakebase project
 # MAGIC 2. Connects via OAuth token authentication (fully automated)
 # MAGIC 3. Seeds 5 tables with realistic e-commerce data
 # MAGIC 4. Explores PostgreSQL system metadata (`pg_catalog`, `information_schema`, `pg_stat_statements`)
 # MAGIC 5. Verifies everything is ready for the remaining workshop labs
 # MAGIC
-# MAGIC > **Setup expectation**: Before running this notebook, the workshop's bundle has been deployed
-# MAGIC > (either from the workspace UI by clicking the deployments icon on `databricks.yml`, or from a
-# MAGIC > terminal with `databricks bundle deploy` from the `datacart-storefront/` directory).
-# MAGIC > See `WORKSHOP_SETUP.md` for the full bundle-first setup flow.
+# MAGIC > **Setup expectation**: Your Lakebase project and the DataCart Storefront app should already be
+# MAGIC > set up before running this notebook. If they aren't, see `WORKSHOP_SETUP.md`.
 # MAGIC
 # MAGIC > **Docs**: [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Manage branches](https://docs.databricks.com/aws/en/oltp/projects/manage-branches) | [API Reference](https://docs.databricks.com/api/workspace/postgres)
 
@@ -120,7 +118,7 @@
 # MAGIC
 # MAGIC ## Architecture After Setup
 # MAGIC ```
-# MAGIC Lakebase Project: lakebase-workshop-<FirstName>-<LastName>   ← deployed by DAB (resources/lakebase_instance.yml)
+# MAGIC Lakebase Project: lakebase-workshop-<your-user-id>             ← set up before the workshop
 # MAGIC └── production (default branch)
 # MAGIC     └── ecommerce (schema)                    ← created in this lab
 # MAGIC         ├── customers    (100 rows)
@@ -156,7 +154,7 @@ dbutils.library.restartPython()
 # MAGIC | **`project_id`** | SDK calls, URLs, the `project_name` variable below | Resource ID — must be lowercase + hyphens (DNS-compliant). Auto-derived from your numeric Databricks user ID, so it looks like `lakebase-workshop-6530815146371371` |
 # MAGIC | **`display_name`** | Lakebase UI, Catalog Explorer, "Lakebase Postgres" page | Human-readable label — auto-derived from your first + last name, so it looks like `Lakebase Workshop — Jane Doe` |
 # MAGIC
-# MAGIC Both refer to **the same Lakebase project**. The bundle (`datacart-storefront/resources/lakebase_instance.yml`) sets both at deploy time. The labs work with the `project_id` because that's what the API expects.
+# MAGIC Both refer to **the same Lakebase project**. The labs work with the `project_id` because that's what the API expects.
 # MAGIC
 # MAGIC > **If you see "Lakebase Workshop — Your Name" in the UI but the notebook prints `lakebase-workshop-<long-number>`, that's expected — they're the same project.**
 
@@ -166,7 +164,7 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 
-# Bundle-deployed project — see datacart-storefront/resources/lakebase_instance.yml
+# Your Lakebase project — name auto-derived from your numeric user ID.
 # This is the project_id (DNS-compliant, used by the SDK), not the display_name.
 project_name = f"lakebase-workshop-{w.current_user.me().id}"
 
@@ -187,28 +185,25 @@ print(f"   Both names point at the same project.")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 2: Discover the Bundle-Deployed Lakebase Project
+# MAGIC ## Step 2: Discover Your Lakebase Project
 # MAGIC
-# MAGIC The Declarative Automation Bundle that ships with this workshop already provisioned a Lakebase
-# MAGIC Autoscaling project (declared in `datacart-storefront/resources/lakebase_instance.yml` as a
-# MAGIC native `postgres_projects` DAB resource). In this step we **discover** that project rather
-# MAGIC than create one — that's the data-centric variant's deployment model: infrastructure-as-code
-# MAGIC first, schema work in the labs.
+# MAGIC Your workspace already has a Lakebase Autoscaling project set up for the workshop. In this
+# MAGIC step we **look it up by name** so the rest of the lab can use it. This is the data-centric
+# MAGIC workshop model: infrastructure ready in advance, schema work in the labs.
 # MAGIC
-# MAGIC **What `databricks bundle deploy` provisioned:**
+# MAGIC **What's already in place:**
 # MAGIC - A **PostgreSQL 17** project with **0.5–2 CU autoscaling** and **300s scale-to-zero**
 # MAGIC - A default **`production` branch** with a primary R/W compute endpoint
 # MAGIC - A **Postgres role** for your Databricks identity (the project owner)
 # MAGIC - A default **`databricks_postgres`** database
 # MAGIC
-# MAGIC If the project doesn't exist yet, run `databricks bundle deploy` from the
-# MAGIC `datacart-storefront/` directory (or click Deploy from the workspace UI on `databricks.yml`).
+# MAGIC > If the project doesn't exist yet, see `WORKSHOP_SETUP.md` for setup instructions.
 # MAGIC
-# MAGIC > **Docs:** [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Manage Lakebase with bundles](https://docs.databricks.com/aws/en/oltp/projects/manage-with-bundles)
+# MAGIC > **Docs:** [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/)
 
 # COMMAND ----------
 
-# Discover the bundle-deployed project by name.
+# Look up your Lakebase project by name.
 existing_projects = list(w.postgres.list_projects())
 project_obj = next(
     (p for p in existing_projects if p.name == f"projects/{project_name}"),
@@ -217,9 +212,7 @@ project_obj = next(
 
 if project_obj is None:
     raise RuntimeError(
-        f"Project '{project_name}' not found. Run "
-        f"'databricks bundle deploy' from the datacart-storefront/ directory first "
-        f"(or deploy via the workspace UI on databricks.yml)."
+        f"Project '{project_name}' not found. See WORKSHOP_SETUP.md for setup instructions."
     )
 
 project_uid = project_obj.uid
@@ -1011,7 +1004,7 @@ print("=" * 60)
 # MAGIC
 # MAGIC **Key accomplishments:**
 # MAGIC - **Learned** what Lakebase Autoscaling is, its key features (autoscaling, branching, scale-to-zero, point-in-time restore), and how it differs from Lakebase Provisioned
-# MAGIC - **Discovered** the Lakebase PostgreSQL 17 project provisioned by the workshop's Declarative Automation Bundle
+# MAGIC - **Discovered** your Lakebase PostgreSQL 17 project
 # MAGIC - **Connected** using OAuth token-based authentication — no passwords needed
 # MAGIC - **Created and populated** 5 PostgreSQL tables with realistic e-commerce data, using native PL/pgSQL features (SERIAL keys, CHECK constraints, foreign keys, cascading deletes)
 # MAGIC - **Explored system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements` — confirming Lakebase is standard PostgreSQL

@@ -25,7 +25,7 @@ datacart-storefront/                  ← bundle root (databricks.yml)
 └── resources/
     ├── lakebase_instance.yml         →  postgres_projects: lakebase-workshop-<your-user-id>
     │                                       (0.5–2 CU autoscaling, 300s scale-to-zero, PG 17)
-    └── datacart_storefront.app.yml   →  Databricks App: datacart-storefront
+    └── datacart_storefront.app.yml   →  Databricks App: storefront-<your-user-id>
                                           (env vars LAKEBASE_PROJECT, ENDPOINT_NAME, DB_SCHEMA)
 ```
 
@@ -33,9 +33,11 @@ datacart-storefront/                  ← bundle root (databricks.yml)
 one step. The bundle does **not** create the Postgres schema, seed tables, or grant database
 permissions — those happen in Labs 1.1 and 2.1, which is part of the actual workshop content.
 
-The project name is auto-derived per user from `${workspace.current_user.id}` (e.g.
-`lakebase-workshop-6530815146371371`), so multiple attendees can deploy into the same workspace
-without colliding.
+Both the Lakebase project and the app name are auto-derived per user from
+`${workspace.current_user.id}` (e.g. `lakebase-workshop-6530815146371371` and
+`storefront-6530815146371371`), so multiple attendees can deploy into the same workspace without
+colliding. The app's `description` field carries the deployer's full name so each attendee can
+spot their own app in the Apps list UI.
 
 ## Path A: Deploy from the workspace UI (no CLI required)
 
@@ -56,7 +58,7 @@ This creates the Lakebase project and the app shell, and uploads the source file
 pane only starts the compute; it doesn't push the source. To push and start, do one of:
 
 - **From a local terminal (recommended)**: `cd datacart-storefront && databricks bundle run datacart_storefront --profile <your-profile>`
-- **Or in the workspace**: Compute → Apps → datacart-storefront → **Deploy** button → set source path to `/Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files` → click Deploy.
+- **Or in the workspace**: Compute → Apps → `storefront-<your-user-id>` → **Deploy** button → set source path to `/Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files` → click Deploy.
 
 After source is deployed, app status moves to `RUNNING` and the URL becomes accessible.
 
@@ -128,7 +130,7 @@ You should see one named `projects/lakebase-workshop-<your-user-id>`. If absent,
 Look at the app logs:
 
 ```bash
-databricks apps logs datacart-storefront --profile <your-profile>
+databricks apps logs storefront-<your-user-id> --profile <your-profile>
 ```
 
 Common causes:

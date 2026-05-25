@@ -20,14 +20,12 @@
 # MAGIC
 # MAGIC ## Where We Are
 # MAGIC
-# MAGIC 1. **Lab 1.1** discovered the Lakebase Autoscaling project (provisioned by the workshop bundle)
-# MAGIC    and seeded the `ecommerce` schema with 5 tables: `customers`, `products`, `inventory`,
-# MAGIC    `orders`, and `order_items`.
+# MAGIC 1. **Lab 1.1** discovered your Lakebase Autoscaling project and seeded the `ecommerce` schema
+# MAGIC    with 5 tables: `customers`, `products`, `inventory`, `orders`, and `order_items`.
 # MAGIC
-# MAGIC 2. **The DataCart Storefront app** has already been deployed as a Databricks App by
-# MAGIC    `databricks bundle deploy` and started by `databricks bundle run datacart_storefront`
-# MAGIC    (see `WORKSHOP_SETUP.md`). The app is running but currently shows **"Loading..."** because
-# MAGIC    its service principal has no Postgres access yet — that's what this lab fixes.
+# MAGIC 2. **The DataCart Storefront app** is already deployed and running as a Databricks App, but
+# MAGIC    currently shows **"Loading..."** because its service principal has no Postgres access yet —
+# MAGIC    that's what this lab fixes.
 # MAGIC
 # MAGIC > **Docs**: [Manage Postgres roles](https://docs.databricks.com/aws/en/oltp/projects/postgres-roles) | [Grant user access tutorial](https://docs.databricks.com/aws/en/oltp/projects/grant-user-access-tutorial) | [Manage permissions](https://docs.databricks.com/aws/en/oltp/projects/manage-permissions)
 
@@ -220,7 +218,7 @@
 # MAGIC ```
 # MAGIC ┌──────────────────────┐        ┌──────────────────────┐
 # MAGIC │  Databricks App      │        │  Lakebase Project     │
-# MAGIC │  "datacart-storefront"│       │  production branch    │
+# MAGIC │  "storefront-<id>"   │        │  production branch    │
 # MAGIC │                      │        │                       │
 # MAGIC │  Runs as SP:         │  OAuth │  Postgres role:       │
 # MAGIC │  8241cbc7-...        │───────▶│  "8241cbc7-..."       │
@@ -270,12 +268,12 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 
-# Bundle-deployed project (datacart-storefront/databricks.yml)
+# Your Lakebase project — name auto-derived from your numeric user ID
 project_name = f"lakebase-workshop-{w.current_user.me().id}"
 db_user = w.current_user.me().user_name
 
-# Bundle-deployed app (datacart-storefront/resources/datacart_storefront.app.yml)
-APP_NAME = "datacart-storefront"
+# The storefront app — name also auto-derived from your numeric user ID
+APP_NAME = f"storefront-{w.current_user.me().id}"
 
 app_info = w.apps.get(APP_NAME)
 SP_CLIENT_ID = app_info.service_principal_client_id

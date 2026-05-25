@@ -254,8 +254,7 @@ project_name = f"lakebase-workshop-{w.current_user.me().id}"
 db_user = w.current_user.me().user_name
 
 # Unity Catalog configuration — set the catalog before running
-# UC_CATALOG = "<add-your-catalog-name-here>"
-UC_CATALOG = "serverless_stable_339b90_catalog"
+UC_CATALOG = "<add-your-catalog-name-here>"
 UC_SCHEMA = "ecommerce"
 UC_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions"
 
@@ -574,7 +573,7 @@ display(spark.sql(f"""
 # COMMAND ----------
 
 # Get the app's SP client ID
-APP_NAME = "datacart-storefront"
+APP_NAME = f"storefront-{w.current_user.me().id}"
 app_info = w.apps.get(APP_NAME)
 SP_CLIENT_ID = app_info.service_principal_client_id
 print(f"App SP: {SP_CLIENT_ID}")
