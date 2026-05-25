@@ -38,7 +38,7 @@
 # MAGIC ```
 # MAGIC ┌──────────────────────┐        ┌──────────────────────┐
 # MAGIC │  Databricks App      │        │  Lakebase Project     │
-# MAGIC │  "datacart-storefront"│       │  production branch    │
+# MAGIC │  "storefront-<id>"   │        │  production branch    │
 # MAGIC │                      │        │                       │
 # MAGIC │  Runs as SP:         │  OAuth │  Postgres role:       │
 # MAGIC │  8241cbc7-...        │───────▶│  "8241cbc7-..."       │
@@ -85,7 +85,7 @@ project_name = f"lakebase-workshop-{w.current_user.me().id}"
 db_user = w.current_user.me().user_name
 
 # Look up the app to find its service principal
-APP_NAME = "datacart-storefront"
+APP_NAME = f"storefront-{w.current_user.me().id}"
 
 app_info = w.apps.get(APP_NAME)
 SP_CLIENT_ID = app_info.service_principal_client_id

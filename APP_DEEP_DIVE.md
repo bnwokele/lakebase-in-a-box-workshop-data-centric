@@ -450,7 +450,7 @@ databricks sync . /Users/<email>/datacart-storefront \
   --exclude .git --exclude "frontend/src" --exclude "frontend/public" \
   --full -p fe-vm-ben
 
-databricks apps deploy datacart-storefront \
+databricks apps deploy storefront-<your-user-id> \
   --source-code-path /Workspace/Users/<email>/datacart-storefront \
   -p fe-vm-ben
 ```

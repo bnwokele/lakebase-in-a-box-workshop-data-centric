@@ -75,7 +75,9 @@ The `datacart-storefront/` folder is a Declarative Automation Bundle. A single `
   - Configured for cost efficiency: **0.5–2 CU autoscaling** with **300s scale-to-zero** timeout
   - PG 17, 7-day PITR retention window
   - Project ID auto-derived from the deploying user's workspace ID (e.g. `lakebase-workshop-6530815146371371`) so multiple attendees can deploy into one workspace without colliding
-- The **DataCart Storefront app** (`datacart-storefront`)
+- The **DataCart Storefront app** (`storefront-<your-user-id>`)
+  - App name auto-derived from the deploying user's workspace ID (e.g. `storefront-6530815146371371`) so multiple attendees can deploy into one workspace without colliding
+  - Description shows the deployer's full name in the Apps list UI, mirroring how the Lakebase project's `display_name` works
   - Source code path points at the bundle's workspace upload location (`${workspace.file_path}`)
   - Connection details discovered at runtime in `server/db.py` using the deployer's identity
 
@@ -105,7 +107,7 @@ That `.bundle/.../files/` location is what the app reads from at runtime.
 
 **2. Start the app + push the source:**
 
-Clicking ▶ run on the app in the Bundle resources pane only **starts the compute**; it doesn't push the source. To push the source AND start the app, navigate to **Compute → Apps → datacart-storefront → Deploy** button. Set the source path to:
+Clicking ▶ run on the app in the Bundle resources pane only **starts the compute**; it doesn't push the source. To push the source AND start the app, navigate to **Compute → Apps → `storefront-<your-user-id>` → Deploy** button (find your app in the list — the description shows your full name). Set the source path to:
 
 ```
 /Workspace/Users/<your-email>/.bundle/datacart-storefront-data-centric/dev/files
@@ -138,7 +140,13 @@ databricks bundle run datacart_storefront --profile <your-profile>
 
 #### Alternative: No-DABs setup via the SDK
 
-If you can't or don't want to use DABs at all (e.g., your workspace doesn't support the workspace deploy flow and you don't have the CLI), open the **`Optional - Create Lakebase Project (SDK).py`** notebook in this folder. It creates the Lakebase project programmatically — same name and settings as the bundle would have produced — and then walks through a UI-based path for deploying the storefront app manually. Once that's done, all the regular labs (1.1 onward) work exactly the same way because they discover the project by name.
+If you can't or don't want to use DABs at all (e.g., your workspace doesn't support the workspace deploy flow and you don't have the CLI), open the **`Optional - Create Lakebase Project (SDK).py`** notebook in this folder. The notebook handles almost everything the bundle does, via the Databricks SDK:
+
+1. Creates the Lakebase Autoscaling project (`lakebase-workshop-<your-user-id>` — same name pattern as the bundle).
+2. Verifies the default `production` branch and compute endpoint are ready.
+3. Creates the storefront app (`storefront-<your-user-id>`) **with the Lakebase project pre-attached as a database resource**, so the platform auto-injects `PGHOST` / `PGUSER` / `PGPORT` / `PGDATABASE` env vars on the next source deploy.
+
+The **only** step left for you afterwards is pointing the app at the source code and clicking **Deploy** in the workspace UI — instructions are in the notebook's final cell. Once that's done, all the regular labs (1.1 onward) work the same way as the DAB path because they discover the project and app by name.
 
 ### Step 2: Run Lab 1.1 to seed the schema
 
