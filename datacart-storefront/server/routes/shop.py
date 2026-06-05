@@ -200,7 +200,7 @@ def featured_products():
     reviews_active = table_exists("reviews")
     order_items_active = table_exists("order_items")
     loyalty_active = column_exists("customers", "loyalty_points")
-    promotions_active = table_exists("promotions")
+    promotions_active = get_promotions_table() is not None
 
     with pool.connection() as conn:
         with conn.cursor() as cur:

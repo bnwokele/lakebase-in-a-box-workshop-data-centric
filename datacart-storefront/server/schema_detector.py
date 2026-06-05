@@ -62,14 +62,20 @@ def get_features() -> dict:
         "email_verified_active": column_exists("customers", "email_verified"),
         "orders_available": table_exists("orders"),
         "order_items_available": table_exists("order_items"),
-        "promotions_active": table_exists("promotions_synced_prod") or table_exists("promotions"),
+        "promotions_active": get_promotions_table() is not None,
     }
 
 
 def get_promotions_table() -> str | None:
-    """Return the actual promotions table name, checking synced name first."""
+    """Return the actual promotions table name.
+
+    Prefers the canonical names (`promotions_synced_prod`, then `promotions`),
+    but falls back to any table whose name contains "promotions" so the
+    storefront still works if the synced table was named slightly differently.
+    """
     if table_exists("promotions_synced_prod"):
         return "promotions_synced_prod"
     if table_exists("promotions"):
         return "promotions"
-    return None
+    matches = sorted(t for t in get_schema() if "promotions" in t.lower())
+    return matches[0] if matches else None
