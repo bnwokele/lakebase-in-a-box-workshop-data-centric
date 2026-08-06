@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Lab 7.1: Point-in-Time Recovery (PITR) & Snapshots
+# MAGIC # Lab 7: Point-in-Time Recovery (PITR) & Snapshots
 # MAGIC
 # MAGIC ---
 # MAGIC
@@ -8,13 +8,15 @@
 # MAGIC and **Snapshots**. You'll learn the concepts behind each, then apply PITR hands-on by simulating
 # MAGIC a production disaster and recovering from it.
 # MAGIC
-# MAGIC ## Why this lab matters for data-centric teams
+# MAGIC ## Why this lab matters
 # MAGIC
-# MAGIC In a data-centric workshop, PITR is more than a database recovery feature — it's the test of
-# MAGIC whether your downstream data flows are *resilient*. After Labs 4.1 and 5.1, you have a
-# MAGIC federated catalog and a Lakehouse Sync pipeline both reading from production. When production
-# MAGIC has an outage, **what happens to those flows, and do they recover automatically?** We'll
-# MAGIC observe that explicitly during the disaster.
+# MAGIC > **📍 DataCart's journey** — DataCart once had a DevOps engineer drop a production table by mistake, taking key storefront functionality down for hours and costing real revenue while the team hunted for a backup. With Lakebase **PITR**, that same recovery takes seconds.
+# MAGIC
+# MAGIC Now that you've evolved the OLTP schema in production (Lab 6), the storefront is running its
+# MAGIC full feature set. But a single bad migration or accidental `DROP TABLE` can take production
+# MAGIC down in an instant. PITR is the safety net: it lets you rewind a branch to **any exact moment**
+# MAGIC within the restore window and recover with zero data loss — no nightly-backup hunt, no hours of
+# MAGIC downtime. We'll prove it by breaking production on purpose and bringing it back.
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC
@@ -23,7 +25,6 @@
 # MAGIC 2. **Explain** what Snapshots are and when to use them vs. PITR
 # MAGIC 3. **Create** a PITR recovery branch from a specific point in time
 # MAGIC 4. **Restore** production data after an accidental destructive operation
-# MAGIC 5. **Re-apply** post-recovery migrations to bring production back to full feature state
 # MAGIC
 # MAGIC > **Docs**: [Point-in-time restore](https://docs.databricks.com/aws/en/oltp/projects/point-in-time-restore) | [Manage branches](https://docs.databricks.com/aws/en/oltp/projects/manage-branches)
 
@@ -185,6 +186,20 @@
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### How we'll do it — the SDK
+# MAGIC
+# MAGIC In the real world, point-in-time recovery is an **API operation** — you drive it from the SDK (or
+# MAGIC the Backup & Restore UI it's built on), not by hand-copying rows in a SQL editor. So we'll run the
+# MAGIC whole disaster→recovery sequence programmatically with `psycopg2` and the Databricks SDK.
+# MAGIC
+# MAGIC The setup cells below install dependencies and define the branch helpers. Then we'll walk the
+# MAGIC incident step by step — health check → disaster → create a recovery branch → copy the data back —
+# MAGIC pausing at three **Storefront Checkpoints** so you can open the DataCart app and watch it break and
+# MAGIC recover in real time.
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ### Step 0: Install Dependencies & Configure Helpers
 
 # COMMAND ----------
@@ -332,29 +347,26 @@ print("🔧 Helpers defined: connect_to_branch(), delete_branch_safe(), print_ta
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ---
-# MAGIC ## Step 1: Verify Production is Healthy
+# MAGIC ## Step 1: Verify production is healthy
 # MAGIC
-# MAGIC Before we simulate the disaster, let's confirm production data is intact.
-# MAGIC We'll record the current state so we can verify our recovery later.
+# MAGIC Connect to the **`production`** branch and confirm the data is intact. Note the order count and
+# MAGIC revenue so you can compare after recovery.
 
 # COMMAND ----------
 
+# 1) Connect to production and confirm baseline
 conn_prod, _, _ = connect_to_branch('production')
-
-# COMMAND ----------
-
-print("📊 Current production state:\n")
-
+print("📊 Production baseline:")
 with conn_prod.cursor() as cur:
     for table in ['customers', 'products', 'orders']:
-        cur.execute(f"SELECT count(*) FROM {db_schema}.{table}")
-        count = cur.fetchone()[0]
-        print(f"   ✅ {table}: {count} rows")
+        try:
+            cur.execute(f"SELECT count(*) FROM {db_schema}.{table}")
+            print(f"   ✅ {table}: {cur.fetchone()[0]} rows")
+        except Exception as e:
+            print(f"   🔴 {table}: {str(e).splitlines()[0]}")
 
     cur.execute(f"SELECT COALESCE(SUM(total), 0) FROM {db_schema}.orders")
-    revenue = cur.fetchone()[0]
-    print(f"\n   💰 Total revenue: ${revenue:,.2f}")
+    print(f"   💰 Total revenue: ${cur.fetchone()[0]:,.2f}")
 
 print("\n✅ Production is healthy. All tables present and populated.")
 
@@ -366,7 +378,7 @@ print("\n✅ Production is healthy. All tables present and populated.")
 # MAGIC Open the **DataCart Storefront** now and note the full feature set:
 # MAGIC - Products display with star ratings, stock badges, and "Earn X pts" labels
 # MAGIC - Best Sellers and Top Rated sections work on the homepage
-# MAGIC - Orders page shows order history with priority badges
+# MAGIC - Orders page shows full order history
 # MAGIC - Cart and checkout function normally
 # MAGIC
 # MAGIC > Take a mental snapshot. In a moment, things will break.
@@ -374,77 +386,41 @@ print("\n✅ Production is healthy. All tables present and populated.")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 2: Record the "Before" Timestamp
+# MAGIC ## Step 2: Record the "before" timestamp, then simulate the disaster
 # MAGIC
-# MAGIC This is the critical step. We record the current time **before** the disaster.
-# MAGIC This timestamp will be used to create the PITR branch later.
+# MAGIC First we capture the current time **before** the disaster — this is the moment we'll rewind to.
+# MAGIC Then a DevOps engineer means to drop a staging table and drops the real `orders` table instead.
 # MAGIC
-# MAGIC > In a real incident, you'd check your monitoring/alerting to determine when the problem started.
+# MAGIC > In a real incident you'd get the recovery timestamp from your monitoring/alerting — the moment
+# MAGIC > just before things went wrong.
 
 # COMMAND ----------
 
 import datetime
 
+# 2) Record the "before" timestamp
 with conn_prod.cursor() as cur:
     cur.execute("SELECT NOW()")
     before_timestamp = cur.fetchone()[0]
-
-# Convert to epoch seconds for the SDK call
 before_epoch = int(before_timestamp.timestamp())
+print(f"⏱️  Recovery point: {before_timestamp} ({before_epoch} epoch seconds)")
 
-print(f"⏱️  Recording 'before' timestamp: {before_timestamp}")
-print(f"   Epoch seconds: {before_epoch}")
-print(f"\n   This is our recovery point. Everything before this moment is safe.")
+# Give the transaction log a moment so the restore point is clearly before the drop
+time.sleep(5)
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 3: Simulate the Disaster
-# MAGIC
-# MAGIC A DevOps engineer accidentally drops the `orders` table.
-# MAGIC This is the kind of mistake that can happen with manual SQL scripts or misconfigured CI/CD.
-# MAGIC
-# MAGIC > **WARNING:** This will actually drop the orders table on the production branch!
-
-# COMMAND ----------
-
-print("💥 DISASTER SCENARIO: DevOps engineer runs the wrong script...")
-print("   Intended: DROP TABLE staging.temp_orders")
-print("   Actual:   DROP TABLE ecommerce.orders CASCADE\n")
-
+# 3) Disaster: drop the orders table
 with conn_prod.cursor() as cur:
     cur.execute(f"DROP TABLE IF EXISTS {db_schema}.orders CASCADE")
+print("\n💥 DROPPED ecommerce.orders — production is now broken.")
 
-print("   🔴 TABLE DROPPED: ecommerce.orders")
-print("\n   The production app is now broken. Customers can't see their orders.")
-print("   Revenue reporting shows $0. The team is panicking.")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 4: Confirm the Damage
-# MAGIC
-# MAGIC Let's verify that the orders table is actually gone and queries fail.
-# MAGIC
-# MAGIC > Open the **DataCart Dashboard** and refresh — you should see orders = 0 and revenue = $0.
-
-# COMMAND ----------
-
-print("🔍 Checking production state after disaster:\n")
-
+# 4) Confirm the damage
 with conn_prod.cursor() as cur:
-    for table in ['customers', 'products', 'orders']:
-        try:
-            cur.execute(f"SELECT count(*) FROM {db_schema}.{table}")
-            count = cur.fetchone()[0]
-            print(f"   ✅ {table}: {count} rows")
-        except Exception as e:
-            print(f"   🔴 {table}: MISSING — {str(e).splitlines()[0]}")
-            # Reset the connection after the error
-            conn_prod.rollback() if not conn_prod.autocommit else None
-
-print("\n🚨 IMPACT: Orders table is gone. The app is serving errors.")
-print("   Revenue: $0 | Orders: 0 | Customer orders page: broken")
+    try:
+        cur.execute(f"SELECT count(*) FROM {db_schema}.orders")
+        print(f"   orders still present? {cur.fetchone()[0]} rows")
+    except Exception as e:
+        print(f"   🔴 orders: {str(e).splitlines()[0]}")
+        conn_prod.rollback() if not conn_prod.autocommit else None
 
 # COMMAND ----------
 
@@ -466,36 +442,17 @@ print("   Revenue: $0 | Orders: 0 | Customer orders page: broken")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cross-Flow Impact: What Happens to Federation and Lakehouse Sync?
-# MAGIC
-# MAGIC With `orders` dropped, run the cells below to **observe what your downstream data flows are
-# MAGIC doing right now**. This is the moment that proves they're built on solid foundations.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC > Federation and sync respond to the outage in *different* ways:
-# MAGIC > - Federation breaks immediately on every query — there is no copy.
-# MAGIC > - Sync goes stale but its already-replicated data remains queryable in Delta.
-# MAGIC >
-# MAGIC > For consumers who can tolerate stale data during an outage, sync degrades more gracefully.
-# MAGIC > For consumers who need live data, federation is honest about the failure. Both are fine
-# MAGIC > behaviors — pick the right tool per use case.
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ---
-# MAGIC ## Step 5: Create a PITR Recovery Branch
+# MAGIC ## Step 3: Create a PITR Recovery Branch
 # MAGIC
-# MAGIC Here's where Lakebase saves the day. We create a new branch using the
-# MAGIC `source_branch_time` parameter — this creates a branch from the state of
-# MAGIC production **at the timestamp we recorded before the disaster**.
+# MAGIC Here's where Lakebase saves the day. We recover production's state from the timestamp we
+# MAGIC recorded **before the disaster** by creating a **new branch** from that point in time using the
+# MAGIC `source_branch_time` parameter. The recovery branch is a full copy of production as it was at that
+# MAGIC moment, including the orders table with all its data.
 # MAGIC
-# MAGIC The PITR branch is a full copy of production as it was at that moment,
-# MAGIC including the orders table with all its data.
-# MAGIC
-# MAGIC > This is the same non-destructive restore model from the lecture: a **new root branch** is created, and the original production branch is unchanged.
+# MAGIC > This is the non-destructive restore model from the lecture: a **new root branch** is created,
+# MAGIC > and the original production branch is unchanged. (A project supports up to **3 root branches** —
+# MAGIC > delete an old one first if you hit the limit.)
 
 # COMMAND ----------
 
@@ -503,16 +460,14 @@ from databricks.sdk.service.postgres import Branch, BranchSpec, Timestamp, Durat
 
 PITR_BRANCH = "pitr-recovery"
 
-# Clean up from previous runs
+# 5) Create the PITR recovery branch from the recorded timestamp
 try:
     w.postgres.delete_branch(name=f"projects/{project_name}/branches/{PITR_BRANCH}").wait()
-    print(f"🧹 Cleaned up existing PITR branch")
+    print(f"🧹 Cleaned up existing branch '{PITR_BRANCH}'")
 except Exception:
     pass
 
 print(f"🔄 Creating PITR branch from production at {before_timestamp}...")
-print(f"   Recovery point: {before_epoch} (epoch seconds)")
-
 w.postgres.create_branch(
     parent=f"projects/{project_name}",
     branch=Branch(spec=BranchSpec(
@@ -522,84 +477,47 @@ w.postgres.create_branch(
     )),
     branch_id=PITR_BRANCH,
 ).wait()
-
-print(f"\n✅ PITR branch '{PITR_BRANCH}' created!")
-print(f"   This branch contains production data from BEFORE the disaster.")
+print(f"✅ PITR branch '{PITR_BRANCH}' created with pre-disaster data.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 6: Verify Data on the PITR Branch
+# MAGIC ## Step 4: Verify data on the recovery branch
 # MAGIC
-# MAGIC Connect to the PITR branch and confirm the orders table exists with all its data.
+# MAGIC Connect to the **recovery branch** and confirm the `orders` table is back with all its rows.
 # MAGIC
-# MAGIC > Run the Setup SP Roles notebook now so the DataCart Dashboard can connect to the PITR branch.
-# MAGIC > Then open the PITR Recovery page in the app to see the comparison.
+# MAGIC > ✅ **Expected result:** the `orders` count and `revenue` **match the healthy numbers from Step 1**
+# MAGIC > — the recovery branch has the pre-disaster data intact.
 
 # COMMAND ----------
 
+# 6) Verify data on the recovery branch
 conn_pitr, _, _ = connect_to_branch(PITR_BRANCH)
-
-# COMMAND ----------
-
-print("📊 PITR branch state (recovered data):\n")
-
-pitr_counts = {}
 with conn_pitr.cursor() as cur:
-    for table in ['customers', 'products', 'orders']:
-        try:
-            cur.execute(f"SELECT count(*) FROM {db_schema}.{table}")
-            count = cur.fetchone()[0]
-            pitr_counts[table] = count
-            print(f"   ✅ {table}: {count} rows")
-        except Exception as e:
-            pitr_counts[table] = 0
-            print(f"   🔴 {table}: {str(e).splitlines()[0]}")
-
+    cur.execute(f"SELECT count(*) FROM {db_schema}.orders")
+    print(f"📦 Recovery branch has {cur.fetchone()[0]} orders.")
     cur.execute(f"SELECT COALESCE(SUM(total), 0) FROM {db_schema}.orders")
-    revenue = cur.fetchone()[0]
-    print(f"\n   💰 Revenue on PITR branch: ${revenue:,.2f}")
-
-print("\n✅ All data is intact on the PITR branch!")
-print("   The orders table was recovered from the point-in-time snapshot.")
+    print(f"💰 Revenue on recovery branch: ${cur.fetchone()[0]:,.2f}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 7: Restore Production
+# MAGIC ## Step 5: Restore Production
 # MAGIC
-# MAGIC Now we restore the orders table to production by:
-# MAGIC 1. Getting the full schema from the PITR branch
-# MAGIC 2. Recreating the table on production
-# MAGIC 3. Copying data from the PITR branch using INSERT
+# MAGIC The recovery branch has the good `orders` data, but the **storefront reads `production`** — which
+# MAGIC is still missing the table. So we copy the data back into production by:
+# MAGIC 1. Recreating the `orders` table on production
+# MAGIC 2. Copying the rows from the recovery branch into it
+# MAGIC 3. Resetting the ID sequence
 # MAGIC
-# MAGIC > In practice, you could also use `pg_dump`/`pg_restore` or application-level data migration.
-# MAGIC > For this workshop, we'll use the simplest approach: recreate + INSERT.
+# MAGIC > This is easy from the SDK because we hold open connections to **both** branches at once and stream
+# MAGIC > the rows across. In practice, you could also use `pg_dump`/`pg_restore` or application-level data
+# MAGIC > migration.
 
 # COMMAND ----------
 
-# First, get the DDL from the PITR branch
-print("🔄 Step 7a: Getting table schema from PITR branch...\n")
-
-with conn_pitr.cursor() as cur:
-    # Get column definitions
-    cur.execute(f"""
-        SELECT column_name, data_type, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = '{db_schema}' AND table_name = 'orders'
-        ORDER BY ordinal_position
-    """)
-    columns = cur.fetchall()
-
-    for col in columns:
-        print(f"   {col[0]}: {col[1]} {'NOT NULL' if col[2] == 'NO' else 'NULL'}")
-
-# COMMAND ----------
-
-print("🔄 Step 7b: Recreating orders table on production...\n")
-
-# Recreate the orders table on production with the same schema
+# 7) Copy the recovered data back into production
+#    7a: recreate the orders table on production
 with conn_prod.cursor() as cur:
     cur.execute(f"""
         CREATE TABLE IF NOT EXISTS {db_schema}.orders (
@@ -613,13 +531,8 @@ with conn_prod.cursor() as cur:
             status           VARCHAR(20) NOT NULL DEFAULT 'pending'
         )
     """)
-    print("   ✅ Orders table recreated on production")
 
-# COMMAND ----------
-
-print("🔄 Step 7c: Copying data from PITR branch to production...\n")
-
-# Read all orders from PITR branch
+#    7b: read rows from the recovery branch
 with conn_pitr.cursor() as cur:
     cur.execute(f"""
         SELECT id, customer_id, product_id, quantity, total, currency, order_date, status
@@ -627,9 +540,8 @@ with conn_pitr.cursor() as cur:
         ORDER BY id
     """)
     orders_data = cur.fetchall()
-    print(f"   📦 Read {len(orders_data)} orders from PITR branch")
 
-# Insert into production
+#    7c: insert into production and reset the sequence
 with conn_prod.cursor() as cur:
     for row in orders_data:
         cur.execute(f"""
@@ -637,44 +549,34 @@ with conn_prod.cursor() as cur:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
         """, row)
-
-    # Reset the sequence to the correct value
     cur.execute(f"""
         SELECT setval(
             pg_get_serial_sequence('{db_schema}.orders', 'id'),
             (SELECT MAX(id) FROM {db_schema}.orders)
         )
     """)
-
-print(f"   ✅ Inserted {len(orders_data)} orders into production")
+print(f"   ✅ Copied {len(orders_data)} orders back into production.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 8: Verify Recovery
+# MAGIC ## Step 6: Verify recovery
 # MAGIC
-# MAGIC Let's confirm that production is fully restored.
+# MAGIC Back on the **`production`** branch, confirm orders and revenue are restored.
 # MAGIC
-# MAGIC > Refresh the **DataCart Dashboard** — you should see orders and revenue are back!
+# MAGIC > ✅ **Expected result:** `orders` and `revenue` **match the healthy numbers from Step 1** 🎉 —
+# MAGIC > production is fully restored.
 
 # COMMAND ----------
 
-print("📊 Production state AFTER recovery:\n")
-
+# 8) Verify recovery
 with conn_prod.cursor() as cur:
-    for table in ['customers', 'products', 'orders']:
-        cur.execute(f"SELECT count(*) FROM {db_schema}.{table}")
-        count = cur.fetchone()[0]
-        print(f"   ✅ {table}: {count} rows")
-
+    cur.execute(f"SELECT count(*) FROM {db_schema}.orders")
+    n = cur.fetchone()[0]
     cur.execute(f"SELECT COALESCE(SUM(total), 0) FROM {db_schema}.orders")
-    revenue = cur.fetchone()[0]
-    print(f"\n   💰 Total revenue: ${revenue:,.2f}")
-
+    rev = cur.fetchone()[0]
 print("\n" + "=" * 60)
-print("🎉 RECOVERY COMPLETE!")
-print("   All orders have been restored from the PITR branch.")
-print("   The DataCart Storefront is fully operational again.")
+print(f"🎉 RECOVERY COMPLETE! Production has {n} orders, revenue ${rev:,.2f}.")
 print("=" * 60)
 
 # COMMAND ----------
@@ -687,94 +589,13 @@ print("=" * 60)
 # MAGIC - Best Sellers on the homepage works again
 # MAGIC - Checkout is functional again
 # MAGIC
-# MAGIC > The storefront detected the restored tables within 30 seconds and automatically recovered.
-# MAGIC >
-# MAGIC > **Note:** The priority badges on orders have disappeared — PITR restored the database
-# MAGIC > to a point in time before Lab 6.3 added the `priority` column. This is expected behavior
-# MAGIC > and illustrates that PITR is a true point-in-time snapshot, not just data recovery.
-# MAGIC >
-# MAGIC > Run the next step to re-apply the missing migrations and bring production back to its full feature set.
+# MAGIC > The storefront detected the restored `orders` table within 30 seconds and automatically
+# MAGIC > recovered — no redeployment needed. Production is fully operational again.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 9: Re-apply Post-Recovery Migrations
-# MAGIC
-# MAGIC PITR restored the data, but the schema is from an earlier point in time. Any migrations
-# MAGIC applied **after** the recovery point need to be replayed. This is the same pattern as
-# MAGIC Lab 6.2 — idempotent DDL that's safe to run multiple times.
-# MAGIC
-# MAGIC This is a key operational takeaway: **after PITR recovery, always check which migrations
-# MAGIC need to be re-applied.**
-
-# COMMAND ----------
-
-print("🔄 Re-applying post-recovery migrations...\n")
-
-POST_RECOVERY_SQL = f"""
--- From Lab 6.3: Add email_verified to customers
-ALTER TABLE {db_schema}.customers
-ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
-
-UPDATE {db_schema}.customers
-SET email_verified = TRUE
-WHERE id % 3 = 0;
-
--- From Lab 6.3: Add priority to orders
-ALTER TABLE {db_schema}.orders
-ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'normal';
-
-UPDATE {db_schema}.orders
-SET priority = CASE
-    WHEN total > 500 THEN 'high'
-    WHEN total > 200 THEN 'medium'
-    ELSE 'normal'
-END;
-"""
-
-with conn_prod.cursor() as cur:
-    cur.execute(POST_RECOVERY_SQL)
-
-# Verify
-with conn_prod.cursor() as cur:
-    cur.execute(f"""
-        SELECT column_name FROM information_schema.columns
-        WHERE table_schema = '{db_schema}' AND table_name = 'orders'
-        ORDER BY ordinal_position
-    """)
-    order_cols = [row[0] for row in cur.fetchall()]
-
-    cur.execute(f"""
-        SELECT priority, COUNT(*) FROM {db_schema}.orders GROUP BY priority ORDER BY priority
-    """)
-    priorities = cur.fetchall()
-
-print("✅ Post-recovery migrations applied!")
-print(f"   Orders columns: {order_cols}")
-print(f"   Priority distribution:")
-for row in priorities:
-    print(f"      {row[0]:10s} {row[1]:4d} orders")
-
-print(f"\n🎉 Production is fully restored with ALL features!")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Storefront Checkpoint 4: Full Feature Restore
-# MAGIC
-# MAGIC Refresh the **DataCart Storefront** one more time:
-# MAGIC - Priority badges are back on the Orders page
-# MAGIC - Verified badge is back in the navbar
-# MAGIC - All features from Labs 3.3 and 3.4 are restored
-# MAGIC
-# MAGIC > **Key Takeaway:** PITR recovers your data to a point in time. Post-recovery,
-# MAGIC > you re-apply any migrations that happened after the recovery point — just like
-# MAGIC > replaying a git rebase after resetting a branch.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 10: Cleanup (Optional)
+# MAGIC ## Step 7: Cleanup (Optional)
 # MAGIC
 # MAGIC > Uncomment to clean up the PITR branch.
 
@@ -798,14 +619,12 @@ print(f"\n🎉 Production is fully restored with ALL features!")
 # MAGIC | **Create PITR branch** | Branch from production at the pre-disaster timestamp |
 # MAGIC | **Verify PITR data** | All 22 orders intact on the recovery branch |
 # MAGIC | **Restore production** | Recreated table + copied data from PITR branch |
-# MAGIC | **Re-apply migrations** | Replayed post-recovery DDL for full feature set |
 # MAGIC | **Verify recovery** | Production fully restored — 22 orders, revenue back |
 # MAGIC
 # MAGIC ### Concepts Covered
 # MAGIC - **PITR** — recover to any second within the restore window, non-destructive (new branch created)
 # MAGIC - **Snapshots** — planned, named restore points for proactive backups before risky operations
 # MAGIC - **PITR vs. Snapshots** — use Snapshots *before* changes, use PITR *after* something goes wrong
-# MAGIC - **Post-recovery migrations** — always check which migrations need to be re-applied after PITR
 # MAGIC
 # MAGIC ### Key Takeaways
 # MAGIC 1. **Lakebase retains full history** — you can recover from any point within the retention window (default 24h)
@@ -813,3 +632,12 @@ print(f"\n🎉 Production is fully restored with ALL features!")
 # MAGIC 3. **Zero-copy snapshots** — the PITR branch doesn't duplicate data, it references the historical state
 # MAGIC 4. **Non-destructive recovery** — you verify data on the branch before touching production
 # MAGIC 5. **Record timestamps proactively** — monitoring and alerting help identify the right recovery point
+# MAGIC
+# MAGIC The hours-long, revenue-losing outage DataCart once suffered is now a seconds-long recovery — no backup hunt required.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC **Previous:** Lab 6 — Schema Migration | **Next:** Lab 8 — Workshop Summary
+# MAGIC
+# MAGIC > To provision your own Lakebase project and app outside this workshop, see the **Create Lakebase Project & App (using SDK)** notebook.
+

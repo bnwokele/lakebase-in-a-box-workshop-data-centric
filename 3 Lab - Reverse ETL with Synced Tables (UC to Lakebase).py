@@ -1,24 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Lab 3.1: Reverse ETL with Synced Tables — UC to Lakebase
+# MAGIC # Lab 3: Reverse ETL with Synced Tables — UC to Lakebase
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ## Direction 1 of 3: Pushing Reference Data from the Lakehouse into OLTP
+# MAGIC ## Direction 1 of 2: Pushing Reference Data from the Lakehouse into OLTP
 # MAGIC
-# MAGIC This lab is the first of three modules that map out **how data moves between the Lakehouse and
-# MAGIC Lakebase** — the central concern for data engineers and architects:
+# MAGIC With the OLTP side now built, evolved, and recoverable, the final two labs wire up the
+# MAGIC **bidirectional data flows between the Lakehouse and Lakebase** — the central concern for
+# MAGIC data engineers and architects:
 # MAGIC
 # MAGIC | Direction | Lab | Mechanism | Use Case |
 # MAGIC |---|---|---|---|
-# MAGIC | **UC → Lakebase** (this lab) | **3.1** | **Synced Tables** (managed CDC) | Push curated analytics data into OLTP so apps can serve it with low latency |
-# MAGIC | **Live read-through** | **4.1** | **Lakebase registered in UC** (Lakehouse Federation) | Query live OLTP from a SQL warehouse without any ETL |
-# MAGIC | **Lakebase → UC** | **5.1** | **Lakehouse Sync** | Continuously stream OLTP into Delta for high-volume analytics |
+# MAGIC | **UC → Lakebase** (this lab) | **3** | **Synced Tables** (managed CDC) | Push curated analytics data into OLTP so apps can serve it with low latency |
+# MAGIC | **Lakebase → UC** | **4** | **Lakebase CDF** | Continuously stream OLTP into Delta for high-volume analytics |
 # MAGIC
 # MAGIC In this module you'll move curated analytics data from the Databricks Lakehouse into the Lakebase
 # MAGIC Postgres database so the live DataCart Storefront can serve it to shoppers with millisecond
 # MAGIC latency. By the end, the storefront's "Spring Sale" badges will appear — driven entirely by a
 # MAGIC Delta table managed in Unity Catalog.
+# MAGIC
+# MAGIC > **📍 DataCart's journey** — DataCart hand-built a brittle pipeline to push promotion data from Databricks into the storefront database — costly to run and one more thing to babysit as data grows. This lab replaces it with **managed Synced Tables**: no ETL code, no redeployments.
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC
@@ -253,8 +255,11 @@ w = WorkspaceClient()
 project_name = f"lakebase-workshop-{w.current_user.me().id}"
 db_user = w.current_user.me().user_name
 
-# Unity Catalog configuration — set the catalog before running
-UC_CATALOG = "<add-your-catalog-name-here>"
+# Unity Catalog configuration.
+# 👉 EDIT THIS: set UC_CATALOG to a Unity Catalog you can create schemas in.
+#    The lab creates the `ecommerce` schema inside it, so you need CREATE SCHEMA
+#    privileges on this catalog.
+UC_CATALOG = "<your-catalog-here>"
 UC_SCHEMA = "ecommerce"
 UC_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions"
 
@@ -459,6 +464,38 @@ display(spark.sql(f"""
 # MAGIC into the production Lakebase branch. The storefront reads from production, so once the
 # MAGIC sync completes the sale badges go live.
 # MAGIC
+# MAGIC First, run the cell below to print **your** project's name and link — Lakebase project names are
+# MAGIC long and hard to remember, so keep this handy to pick the right one in the sync dialog.
+
+# COMMAND ----------
+
+# Print the exact project the learner should pick in the synced-table dialog.
+me = w.current_user.me()
+workspace_host = w.config.host.rstrip("/")
+
+# Look up your Lakebase project by name (same pattern as Lab 1).
+project_obj = next(
+    (p for p in w.postgres.list_projects() if p.name == f"projects/{project_name}"),
+    None,
+)
+
+if project_obj is not None:
+    project_display = project_obj.display_name or "(no display name set)"
+    project_link = f"{workspace_host}/lakebase/projects/{project_obj.uid}"
+else:
+    project_display = f"Lakebase Workshop — {me.name.given_name} {me.name.family_name}"
+    project_link = f"{workspace_host}/lakebase"
+    print("(Could not find the project automatically — use the values below as a guide.)\n")
+
+print("👉 In the Synced table dialog, pick THIS project:\n")
+print(f"   Project name (what the picker shows):  {project_display}")
+print(f"   Project id (SDK / URL identifier):     {project_name}")
+print(f"   Branch to select:                      production")
+print(f"\n🔗 Open your project in the Lakebase UI: {project_link}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC **Follow these steps in the Databricks UI:**
 # MAGIC
 # MAGIC 1. Navigate to **Catalog** in the left sidebar
@@ -468,7 +505,8 @@ display(spark.sql(f"""
 # MAGIC 5. In the dialog:
 # MAGIC    - **Table name**: input **promotions_synced_prod**
 # MAGIC    - **Database type**: Select **Lakebase Serverless (Autoscaling)**
-# MAGIC    - **Project**: Select your workshop project (`lakebase-workshop-<FirstName>-<LastName>`)
+# MAGIC    - **Project**: Select your workshop project — the name printed by the cell above
+# MAGIC      (display name `Lakebase Workshop — <First> <Last>`, project id `lakebase-workshop-<your-user-id>`)
 # MAGIC    - **Branch**: Select **production**
 # MAGIC    - **Sync mode**: Select **Snapshot** (full copy, simplest for demo)
 # MAGIC    - **Primary key**: Verify `id` is selected
@@ -652,150 +690,7 @@ with conn_prod.cursor() as cur:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 7: Update Promotions (Simulate Marketing Campaign Change)
-# MAGIC
-# MAGIC The marketing team decides to add a **flash sale** on more products and increase
-# MAGIC the discount on an existing promotion. Let's update the Delta table and trigger a re-sync.
-
-# COMMAND ----------
-
-from pyspark.sql.functions import when, lit
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DecimalType, BooleanType, TimestampType
-from datetime import datetime, timedelta
-from decimal import Decimal
-
-now = datetime.now()
-end_date = now + timedelta(days=14) # 2-week sale
-
-# Add new flash sale promotions
-new_promos = [
-    Row(id=13, product_id=3, badge_text="FLASH SALE", discount_pct=Decimal("45.00"), sale_price=None, promo_type="percentage", is_active=True, start_date=now, end_date=end_date),
-    Row(id=14, product_id=7, badge_text="FLASH SALE", discount_pct=Decimal("35.00"), sale_price=None, promo_type="percentage", is_active=True, start_date=now, end_date=end_date),
-    Row(id=15, product_id=35, badge_text="MEGA DEAL", discount_pct=Decimal("60.00"), sale_price=None, promo_type="percentage", is_active=True, start_date=now, end_date=end_date),
-]
-
-schema = StructType([
-    StructField("id", IntegerType()),
-    StructField("product_id", IntegerType()),
-    StructField("badge_text", StringType()),
-    StructField("discount_pct", DecimalType(5, 2)),
-    StructField("sale_price", DecimalType(10, 2)),
-    StructField("promo_type", StringType()),
-    StructField("is_active", BooleanType()),
-    StructField("start_date", TimestampType()),
-    StructField("end_date", TimestampType()),
-])
-
-new_df = spark.createDataFrame(new_promos, schema=schema)
-
-# Compute sale prices for new promos
-new_with_prices = (
-    new_df.join(
-        spark.createDataFrame([Row(product_id=pid, original_price=price) for pid, price in product_prices.items()]),
-        "product_id", "left"
-    )
-    .withColumn("sale_price", spark_round(col("original_price") * (1 - col("discount_pct") / 100), 2))
-    .drop("original_price")
-)
-
-# Append new promos to the existing table
-new_with_prices.write.mode("append").saveAsTable(UC_TABLE)
-
-# Also update an existing promo - increase Product 1 discount from 20% to 35%
-spark.sql(f"""
-    UPDATE {UC_TABLE}
-    SET discount_pct = 35.00,
-        badge_text = 'MEGA DEAL',
-        sale_price = ROUND(sale_price / (1 - 0.20) * (1 - 0.35), 2)
-    WHERE id = 1
-""")
-
-print("\u2705 Marketing team updated promotions:")
-print("   \u2022 Added 3 new flash sale products")
-print("   \u2022 Increased Product 1 discount from 20% to 35%")
-display(spark.table(UC_TABLE).orderBy("discount_pct", ascending=False))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 8: Trigger Re-Sync
-# MAGIC
-# MAGIC For **Snapshot** mode, we need to manually trigger a refresh. For **Triggered** or
-# MAGIC **Continuous** modes, this would happen automatically — matching the sync mode
-# MAGIC decision guide from the lecture section.
-
-# COMMAND ----------
-
-SYNCED_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.promotions_synced_prod"
-
-# COMMAND ----------
-
-# Trigger the sync pipeline to pick up the changes
-try:
-    table_info = w.database.get_synced_database_table(name=SYNCED_TABLE)
-    pipeline_id = table_info.data_synchronization_status.pipeline_id
-    print(f"🔄 Triggering sync pipeline: {pipeline_id}")
-    w.pipelines.start_update(pipeline_id=pipeline_id)
-    print("✅ Sync triggered! Waiting for completion...")
-
-    # Wait for the sync to complete
-    for i in range(30):
-        time.sleep(10)
-        table_info = w.database.get_synced_database_table(name=UC_TABLE)
-        status = table_info.data_synchronization_status
-        if status and status.last_sync_time:
-            print(f"\n✅ Sync completed!")
-            break
-        print(f"   Still syncing... ({(i+1)*10}s)")
-except Exception as e:
-    print(f"⚠️ Could not trigger sync automatically: {e}")
-    print("   You can trigger a refresh manually in the Catalog UI:")
-    print(f"   Navigate to {UC_TABLE} → Synced table tab → Refresh")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 9: Verify Updated Promotions in Lakebase
-
-# COMMAND ----------
-
-conn_prod, _, _ = connect_to_branch("production")
-
-with conn_prod.cursor() as cur:
-    cur.execute(f"""
-        SELECT id, product_id, badge_text, discount_pct, sale_price, is_active
-        FROM {db_schema}.promotions_synced_prod
-        WHERE is_active = true
-        ORDER BY discount_pct DESC
-    """)
-    rows = cur.fetchall()
-    cols = [d[0] for d in cur.description]
-
-print(f"✅ Updated promotions synced to Lakebase! {len(rows)} active promotions:\n")
-for row in rows:
-    r = dict(zip(cols, row))
-    print(f"   Product {r['product_id']:3d} | {r['badge_text']:14s} | -{r['discount_pct']}% | Sale: ${r['sale_price']}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Storefront Checkpoint: Updated Promotions
-# MAGIC
-# MAGIC Refresh the **DataCart Storefront** and observe:
-# MAGIC
-# MAGIC - **3 new products** now show flash sale badges
-# MAGIC - **Product 1** now shows "MEGA DEAL -35%" instead of "SPRING SALE -20%"
-# MAGIC - The storefront updated **without any code changes or redeployment**
-# MAGIC
-# MAGIC > This is the power of reverse ETL: your analytics team modifies a Delta table,
-# MAGIC > the sync pipeline pushes it to Lakebase, and the application reflects the change
-# MAGIC > automatically. The storefront code never changed — it just queries the same
-# MAGIC > database and renders whatever promotions are active.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 10: Cleanup (Optional)
+# MAGIC ## Step 7: Cleanup (Optional)
 # MAGIC
 # MAGIC > Uncomment to remove the synced table and Delta table.
 
@@ -816,7 +711,6 @@ for row in rows:
 # MAGIC | **Create synced table** | Reverse ETL pipeline syncs Delta → Lakebase Postgres |
 # MAGIC | **Verify sync** | Queried `ecommerce.promotions` directly in Lakebase |
 # MAGIC | **Storefront impact** | Sale badges, discount prices, promo banners appeared automatically |
-# MAGIC | **Update & re-sync** | Added new promotions, triggered refresh, storefront updated |
 # MAGIC
 # MAGIC ### Concepts Covered
 # MAGIC - **Reverse ETL** — moving curated analytics data from the lakehouse to OLTP for low-latency serving
@@ -831,3 +725,9 @@ for row in rows:
 # MAGIC 3. **Change Data Feed** enables incremental sync for near real-time updates
 # MAGIC 4. **Unity Catalog governance** applies — access control, lineage, and auditing on the source data
 # MAGIC 5. **Sub-10ms query latency** — Lakebase serves the synced data with OLTP-grade performance
+# MAGIC
+# MAGIC DataCart's hand-built inbound promotions pipeline is retired — the lakehouse-to-app flow is now fully managed, with no ETL code to maintain.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC **Next:** In Lab 4, we'll set up the outbound flow — **Lakebase CDF** — mirroring live Lakebase tables back into Delta for analytics.

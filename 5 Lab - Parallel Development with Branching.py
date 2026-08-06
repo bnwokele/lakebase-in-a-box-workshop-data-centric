@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Lab 6.1: Parallel Development with Branching
+# MAGIC # Lab 5: Parallel Development with Branching
 # MAGIC
 # MAGIC ---
 # MAGIC
@@ -9,11 +9,12 @@
 # MAGIC branching and apply them hands-on by simulating three developers working in parallel on
 # MAGIC isolated branches.
 # MAGIC
-# MAGIC > **Cross-flow note.** When you create a dev branch, it gets a *point-in-time copy* of every
-# MAGIC > table on its parent — including any synced tables (like `promotions_synced_prod` from Lab 3.1).
-# MAGIC > That copy is **static**: the Synced Tables pipeline (Lab 3.1) and the Lakehouse Sync pipeline
-# MAGIC > (Lab 5.1) both target the **production** branch. Dev branches are sandboxes; downstream
-# MAGIC > sync flows continue to reflect production state.
+# MAGIC > **📍 DataCart's journey** — DataCart's developers all shared a single dev database that constantly
+# MAGIC > drifted from production and had to be refreshed every weekend — a workaround that won't scale as the
+# MAGIC > team hires more engineers. A Lakebase **dev branch** is a *point-in-time, zero-copy clone* of its
+# MAGIC > parent: every developer gets an isolated, production-like database in seconds and can run breaking
+# MAGIC > DDL without touching production or each other's work — the foundation for the parallel schema
+# MAGIC > evolution we promote to production in the next lab.
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC
@@ -31,8 +32,8 @@
 # MAGIC %md-sandbox
 # MAGIC ## Why Database Branching?
 # MAGIC
-# MAGIC <img src="Includes/images/branching/branching-overview-intro-image-2.png"
-# MAGIC      alt="Branching Overview"
+# MAGIC <img src="Includes/images/branching/shared-database.png"
+# MAGIC      alt="Shared Development Database"
 # MAGIC      width="1100">
 # MAGIC
 # MAGIC Through the years, **code** has evolved to be agile (branches, PRs, CI/CD), but **databases** have stayed static. They don't match how teams build software.
@@ -45,6 +46,10 @@
 # MAGIC Most databases today make all of this difficult. The default solution has always been **copying the database** — which is expensive, time-consuming, and error-prone. Teams compromise by testing against incomplete data or sharing environments.
 # MAGIC
 # MAGIC Lakebase, through **branching**, makes this process instant and cost-efficient.
+# MAGIC
+# MAGIC <img src="Includes/images/branching/branch-per-developer.png"
+# MAGIC      alt="A branch per developer"
+# MAGIC      width="1100">
 
 # COMMAND ----------
 
@@ -187,9 +192,11 @@
 # MAGIC
 # MAGIC | Developer | Team | Task |
 # MAGIC |-----------|------|------|
-# MAGIC | Developer A | Loyalty Team | Add `loyalty_points` column, new `loyalty_members` table and `reviews` table |
+# MAGIC | **Developer A** (you) | Loyalty Team | Add `loyalty_points` column, new `loyalty_members` table and `reviews` table |
 # MAGIC | Developer B | Global Team | Add `exchange_rates` table + convert `currency` to a FK |
 # MAGIC | Developer C | Performance Team | Add indexes to `products` for Spring Sale traffic surge |
+# MAGIC
+# MAGIC In this lab **you'll play Developer A** and take the Loyalty Team's work through its own isolated branch. Developers B and C would be doing the same thing on their own branches at the same time — that parallelism is exactly what branching unlocks.
 # MAGIC
 # MAGIC Traditional database workflows create bottlenecks:
 # MAGIC - Schema changes can create friction (Developer A's DDL changes can break Developer B's code when sharing the **same copy** of the database)
@@ -203,8 +210,299 @@
 
 # COMMAND ----------
 
+# MAGIC %md-sandbox
+# MAGIC ## Two ways to do this lab — pick one
+# MAGIC
+# MAGIC The hands-on work in this lab is presented **two ways**. They accomplish exactly the same thing —
+# MAGIC pick whichever fits how you like to work:
+# MAGIC
+# MAGIC | | **Path A — Interactive (UI + SQL editor)** | **Path B — SDK ("Run All")** |
+# MAGIC |---|---|---|
+# MAGIC | How | Create the branch in the Lakebase UI and paste SQL into the branch's SQL editor | Run the notebook top-to-bottom; `psycopg2` + the Databricks SDK do it for you |
+# MAGIC | Best for | Seeing and clicking through each step yourself | A fast, scripted walkthrough / seeing the SDK calls |
+# MAGIC | Where | **Path A — Interactive** section below | **Path B — SDK** section at the bottom |
+# MAGIC
+# MAGIC > Both paths are equivalent and idempotent. **Do just one** — or run Path A first and use Path B
+# MAGIC > later to see the programmatic equivalent.
+
+# COMMAND ----------
+
 # MAGIC %md
-# MAGIC ### Step 0: Install Dependencies & Configure Helpers
+# MAGIC ---
+# MAGIC ## Developer A — Loyalty Team
+# MAGIC
+# MAGIC **Goal:** Add a `loyalty_points` column to the `users` table and create a new `loyalty_members` table to support DataCart's Spring Sale loyalty program.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### What is a loyalty program — and why is DataCart adding one?
+# MAGIC
+# MAGIC A **loyalty program** rewards customers for repeat business. Instead of treating every purchase as
+# MAGIC a one-off, the store tracks how much each customer spends over time, converts that into **points**,
+# MAGIC and groups customers into **tiers** (Bronze → Silver → Gold → Platinum). Higher tiers unlock perks —
+# MAGIC early access, better discounts, free shipping — which gives customers a reason to keep coming back.
+# MAGIC
+# MAGIC **Why DataCart wants this now.** The **Spring Sale** is coming, and DataCart's best customers are
+# MAGIC exactly the ones it most wants to bring back for it. A loyalty program lets DataCart:
+# MAGIC - **Reward its highest-value customers** ahead of the sale (e.g. early access for Gold/Platinum)
+# MAGIC - **Lift retention and repeat purchases** — points give customers a reason to return
+# MAGIC - **Segment customers by value** so marketing can target the right offer to the right tier
+# MAGIC
+# MAGIC That's the Loyalty Team's job: add points tracking to the existing customer data and stand up a
+# MAGIC tiered membership table — all on an isolated branch, without touching production.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### How the underlying tables build the `loyalty_members` table
+# MAGIC
+# MAGIC The loyalty program isn't built from scratch — it's **derived from data DataCart already has**.
+# MAGIC Two existing tables feed into the new `loyalty_members` table:
+# MAGIC
+# MAGIC | Source | Role in the loyalty program |
+# MAGIC |--------|-----------------------------|
+# MAGIC | **`orders`** (existing) | The record of what each customer has spent. This is the *source of value* — points are earned from real purchase history. |
+# MAGIC | **`customers`** (existing) | The people we're enrolling. It gains a new **`loyalty_points`** column. |
+# MAGIC
+# MAGIC The build happens in three steps (this is exactly what the SQL/SDK cells below do):
+# MAGIC
+# MAGIC 1. **Add `loyalty_points` to `customers`, and backfill it from `orders`.** Each customer's points
+# MAGIC    are the sum of their order totals, rounded down: `SUM(FLOOR(orders.total))` grouped by customer.
+# MAGIC    A customer who has spent \$1,240 across their orders ends up with `loyalty_points = 1240`.
+# MAGIC
+# MAGIC 2. **Enroll customers into `loyalty_members`.** Every customer with `loyalty_points > 0` becomes a
+# MAGIC    member. Their point total is copied into `total_earned`, and each member is linked back to the
+# MAGIC    customer by `email` (a foreign key to `customers.email`).
+# MAGIC
+# MAGIC 3. **Assign a tier from the points.** A `CASE` expression maps the point total to a tier:
+# MAGIC
+# MAGIC    | Tier | Points threshold |
+# MAGIC    |------|------------------|
+# MAGIC    | **Platinum** | ≥ 3000 |
+# MAGIC    | **Gold** | ≥ 1500 |
+# MAGIC    | **Silver** | ≥ 500 |
+# MAGIC    | **Bronze** | anything above 0 |
+# MAGIC
+# MAGIC Developer A also creates a **`reviews`** table (product ratings from beta testers) in the same
+# MAGIC branch — it's the other half of the Loyalty Team's work and powers the storefront's star ratings.
+
+# COMMAND ----------
+
+# MAGIC %md-sandbox
+# MAGIC ### The loyalty data model, visualized
+# MAGIC
+# MAGIC The diagram below shows the full set of Developer A's changes: how `orders` and `customers` feed the
+# MAGIC new `loyalty_points` column and the `loyalty_members` table, plus the standalone `reviews` table.
+# MAGIC
+# MAGIC <img src="Includes/images/branching/loyalty-data-model.png"
+# MAGIC      alt="How orders and customers build the loyalty_members table, plus the reviews table"
+# MAGIC      width="1100">
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Path A — Interactive (UI + SQL editor)
+# MAGIC
+# MAGIC *One of two equivalent paths — see "Two ways to do this lab" above. For the SDK version, jump to
+# MAGIC **Path B — SDK ("Run All")** at the bottom.*
+# MAGIC
+# MAGIC ## Step 1: Create Developer A's branch in the Lakebase UI
+# MAGIC
+# MAGIC Developer A starts by creating an isolated branch from `production`. This is a **zero-copy
+# MAGIC snapshot** — no data is duplicated on disk; the branch only diverges as changes are made.
+# MAGIC
+# MAGIC **Create the branch in the UI:**
+# MAGIC 1. Open the **Lakebase project UI** (the project link was printed in Lab 1).
+# MAGIC 2. Select the **`production`** branch, then click **Create branch** (or the **+** in the branch list).
+# MAGIC 3. Name the new branch **`dev-loyalty-reviews`**.
+# MAGIC 4. Leave `production` as the **source branch** and create it. It's ready in a few seconds.
+# MAGIC
+# MAGIC > This mirrors how a developer would spin up their own isolated database on demand. Branches can
+# MAGIC > also be set to expire automatically (e.g. a 48-hour TTL) so short-lived feature work cleans
+# MAGIC > itself up — matching the CI/CD pattern discussed above.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 2: Run Developer A's changes in the Lakebase SQL editor
+# MAGIC
+# MAGIC Now that the `dev-loyalty-reviews` branch exists, let's do Developer A's work **the way a developer
+# MAGIC actually would** — by connecting a SQL editor to the branch and running the migration there.
+# MAGIC
+# MAGIC **How to open the SQL editor on your branch:**
+# MAGIC 1. In the Lakebase project UI, select the **`dev-loyalty-reviews`** branch (not `production`).
+# MAGIC 2. Open the branch's **SQL editor** and run each block below, in order.
+# MAGIC
+# MAGIC ### 1. Add the `loyalty_points` column and backfill it from order history
+# MAGIC ```sql
+# MAGIC ALTER TABLE ecommerce.customers
+# MAGIC ADD COLUMN IF NOT EXISTS loyalty_points INT NOT NULL DEFAULT 0;
+# MAGIC
+# MAGIC UPDATE ecommerce.customers u
+# MAGIC SET loyalty_points = (
+# MAGIC     SELECT COALESCE(SUM(FLOOR(o.total)::INT), 0)
+# MAGIC     FROM ecommerce.orders o WHERE o.customer_id = u.id
+# MAGIC );
+# MAGIC
+# MAGIC -- See the result
+# MAGIC SELECT id, name, loyalty_points
+# MAGIC FROM ecommerce.customers
+# MAGIC ORDER BY loyalty_points DESC
+# MAGIC LIMIT 10;
+# MAGIC ```
+# MAGIC
+# MAGIC > ✅ **Expected result:** the top 10 customers, each now showing a non-zero `loyalty_points` value
+# MAGIC > (highest first) — the column was added and backfilled from order history.
+# MAGIC
+# MAGIC ### 2. Create the `loyalty_members` table and enroll customers by tier
+# MAGIC ```sql
+# MAGIC CREATE TABLE IF NOT EXISTS ecommerce.loyalty_members (
+# MAGIC     id              SERIAL PRIMARY KEY,
+# MAGIC     email           VARCHAR(255) NOT NULL REFERENCES ecommerce.customers(email),
+# MAGIC     tier            VARCHAR(20) NOT NULL DEFAULT 'Bronze'
+# MAGIC         CHECK (tier IN ('Bronze', 'Silver', 'Gold', 'Platinum')),
+# MAGIC     enrolled_at     TIMESTAMP   NOT NULL DEFAULT NOW(),
+# MAGIC     total_earned    INT         NOT NULL DEFAULT 0
+# MAGIC );
+# MAGIC
+# MAGIC INSERT INTO ecommerce.loyalty_members (email, tier, enrolled_at, total_earned)
+# MAGIC SELECT
+# MAGIC     email,
+# MAGIC     CASE
+# MAGIC         WHEN loyalty_points >= 3000 THEN 'Platinum'
+# MAGIC         WHEN loyalty_points >= 1500 THEN 'Gold'
+# MAGIC         WHEN loyalty_points >= 500  THEN 'Silver'
+# MAGIC         ELSE 'Bronze'
+# MAGIC     END,
+# MAGIC     NOW(),
+# MAGIC     loyalty_points
+# MAGIC FROM ecommerce.customers
+# MAGIC WHERE loyalty_points > 0
+# MAGIC ON CONFLICT (id) DO NOTHING;
+# MAGIC
+# MAGIC -- See the enrolled members
+# MAGIC SELECT lm.id, u.name, lm.tier, lm.total_earned AS points
+# MAGIC FROM ecommerce.loyalty_members lm
+# MAGIC JOIN ecommerce.customers u ON u.email = lm.email
+# MAGIC ORDER BY lm.total_earned DESC
+# MAGIC LIMIT 10;
+# MAGIC ```
+# MAGIC
+# MAGIC > ✅ **Expected result:** up to 10 enrolled members with a `tier` (Bronze → Platinum) assigned by
+# MAGIC > their points — the `loyalty_members` table was created and populated.
+# MAGIC
+# MAGIC ### 3. Create the `reviews` table and seed it with beta-tester reviews
+# MAGIC ```sql
+# MAGIC CREATE TABLE IF NOT EXISTS ecommerce.reviews (
+# MAGIC     id SERIAL PRIMARY KEY,
+# MAGIC     product_id INT NOT NULL REFERENCES ecommerce.products(id),
+# MAGIC     customer_id INT NOT NULL REFERENCES ecommerce.customers(id),
+# MAGIC     rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+# MAGIC     comment TEXT,
+# MAGIC     review_date TIMESTAMP DEFAULT NOW()
+# MAGIC );
+# MAGIC
+# MAGIC -- Seed a spread of beta-tester reviews. Several products get 2+ reviews so the
+# MAGIC -- storefront's "Top Rated" section (which needs ≥2 reviews per product) lights up.
+# MAGIC INSERT INTO ecommerce.reviews (id, product_id, customer_id, rating, comment, review_date) VALUES
+# MAGIC     (1,  1,  3,  5, 'Great product, highly recommend!',        '2024-01-05'),
+# MAGIC     (2,  1,  12, 4, 'Solid build quality, very happy.',        '2024-01-11'),
+# MAGIC     (3,  1,  27, 5, 'Best purchase I''ve made this year.',      '2024-01-19'),
+# MAGIC     (4,  2,  8,  4, 'Exceeded my expectations.',               '2024-01-07'),
+# MAGIC     (5,  2,  33, 5, 'Fast shipping and excellent quality.',    '2024-01-22'),
+# MAGIC     (6,  3,  5,  3, 'Decent product for the price.',           '2024-01-09'),
+# MAGIC     (7,  3,  41, 4, 'Would buy again in a heartbeat.',         '2024-01-15'),
+# MAGIC     (8,  5,  17, 5, 'Exceeded my expectations.',               '2024-01-03'),
+# MAGIC     (9,  5,  52, 4, 'Great product, highly recommend!',        '2024-01-25'),
+# MAGIC     (10, 7,  22, 2, 'Not as described, somewhat disappointed.','2024-01-13'),
+# MAGIC     (11, 7,  60, 4, 'Does what it''s supposed to do.',          '2024-01-18'),
+# MAGIC     (12, 9,  14, 5, 'Solid build quality, very happy.',        '2024-01-06'),
+# MAGIC     (13, 9,  38, 5, 'Best purchase I''ve made this year.',      '2024-01-21'),
+# MAGIC     (14, 12, 45, 4, 'Fast shipping and excellent quality.',    '2024-01-10'),
+# MAGIC     (15, 12, 71, 3, 'Average quality, nothing special.',       '2024-01-24'),
+# MAGIC     (16, 15, 9,  5, 'Would buy again in a heartbeat.',         '2024-01-08'),
+# MAGIC     (17, 15, 63, 4, 'Great product, highly recommend!',        '2024-01-17'),
+# MAGIC     (18, 18, 29, 1, 'Quality could be better.',                '2024-01-12'),
+# MAGIC     (19, 18, 55, 3, 'Okay but could be improved.',             '2024-01-20'),
+# MAGIC     (20, 21, 4,  5, 'Exceeded my expectations.',               '2024-01-04'),
+# MAGIC     (21, 21, 48, 4, 'Solid build quality, very happy.',        '2024-01-26'),
+# MAGIC     (22, 25, 36, 5, 'Best purchase I''ve made this year.',      '2024-01-14'),
+# MAGIC     (23, 25, 77, 4, 'Fast shipping and excellent quality.',    '2024-01-23'),
+# MAGIC     (24, 30, 19, 4, 'Would buy again in a heartbeat.',         '2024-01-16')
+# MAGIC ON CONFLICT (id) DO NOTHING;
+# MAGIC
+# MAGIC -- Keep the id sequence in sync with the rows we just inserted
+# MAGIC SELECT setval(pg_get_serial_sequence('ecommerce.reviews', 'id'),
+# MAGIC               (SELECT MAX(id) FROM ecommerce.reviews));
+# MAGIC
+# MAGIC -- See the seeded reviews
+# MAGIC SELECT product_id, COUNT(*) AS review_count, ROUND(AVG(rating), 1) AS avg_rating
+# MAGIC FROM ecommerce.reviews
+# MAGIC GROUP BY product_id
+# MAGIC ORDER BY product_id;
+# MAGIC ```
+# MAGIC
+# MAGIC > ✅ **Expected result:** ~12 products with reviews, several showing a `review_count` of 2 or 3 and
+# MAGIC > an `avg_rating` — the `reviews` table is created and populated.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 3: Prove the branch is isolated from production
+# MAGIC
+# MAGIC This is the payoff of branching. Run the first query **on the `dev-loyalty-reviews` branch**, then
+# MAGIC switch your SQL editor to the **`production`** branch and run the second — the column exists on your
+# MAGIC branch but **not** on production.
+# MAGIC
+# MAGIC **On the `dev-loyalty-reviews` branch — the new column exists:**
+# MAGIC ```sql
+# MAGIC SELECT column_name
+# MAGIC FROM information_schema.columns
+# MAGIC WHERE table_schema = 'ecommerce'
+# MAGIC   AND table_name  = 'customers'
+# MAGIC   AND column_name = 'loyalty_points';
+# MAGIC ```
+# MAGIC
+# MAGIC > ✅ **Expected result:** **1 row** — `loyalty_points`. The column is present on the branch.
+# MAGIC
+# MAGIC **Switch the editor to the `production` branch — the change is NOT there:**
+# MAGIC ```sql
+# MAGIC SELECT column_name
+# MAGIC FROM information_schema.columns
+# MAGIC WHERE table_schema = 'ecommerce'
+# MAGIC   AND table_name  = 'customers'
+# MAGIC   AND column_name = 'loyalty_points';
+# MAGIC ```
+# MAGIC
+# MAGIC > ✅ **Expected result:** **0 rows** — production is untouched. The change lives only on the branch.
+# MAGIC
+# MAGIC > **Why doesn't the storefront app change?** The DataCart app connects only to the **`production`**
+# MAGIC > branch, and your work lives on `dev-loyalty-reviews`. That's exactly the point: your in-progress
+# MAGIC > schema changes are invisible to production (and to the app) until you deliberately promote them —
+# MAGIC > which is what **Lab 6** does. The storefront won't light up loyalty/reviews until then.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ---
+# MAGIC # Path B — SDK ("Run All")
+# MAGIC
+# MAGIC *The second of two equivalent paths — see "Two ways to do this lab" near the top.*
+# MAGIC
+# MAGIC These cells reproduce everything in Path A through `psycopg2` and the SDK — **including creating the
+# MAGIC branch** — so you can run the notebook end-to-end instead of using the UI + SQL editor. It's
+# MAGIC self-contained: the setup cells below install dependencies and define the branch helpers, then
+# MAGIC create the branch and run all of Developer A's changes. Safe to run more than once (all DDL is
+# MAGIC idempotent); if you already created `dev-loyalty-reviews` in the UI, the create step just reuses it.
+# MAGIC
+# MAGIC > If you already completed **Path A** above, you don't need to run this — it's the same work the
+# MAGIC > other way. Run it if you'd like to see the SDK equivalent.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Step 0: Install Dependencies & Configure Helpers (SDK path)
 
 # COMMAND ----------
 
@@ -365,16 +663,10 @@ print("🔧 print_table, connect_to_branch() and delete_branch_safe() helpers de
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ---
-# MAGIC ## Developer A — Loyalty Team
+# MAGIC ### Task A-1: Create Branch `dev-loyalty-reviews` (SDK)
 # MAGIC
-# MAGIC **Goal:** Add a `loyalty_points` column to the `users` table and create a new `loyalty_members` table to support DataCart's Spring Sale loyalty program.
-# MAGIC
-# MAGIC ### Task A-1: Create Branch `dev-loyalty-reviews`
-# MAGIC
-# MAGIC Developer A creates an isolated branch from `production`. This is a **zero-copy snapshot** — no data is duplicated on disk. The branch diverges only as changes are made.
-# MAGIC
-# MAGIC > Notice the `ttl=Duration(seconds=172800)` — this is a **48-hour expiring branch**. It will be automatically cleaned up, matching the CI/CD pattern discussed above.
+# MAGIC The SDK equivalent of the UI branch-creation step above. `ttl=Duration(seconds=172800)` makes this
+# MAGIC a **48-hour expiring branch** that cleans itself up automatically.
 
 # COMMAND ----------
 
@@ -382,7 +674,7 @@ from databricks.sdk.service.postgres import Branch, BranchSpec, Duration
 
 BRANCH_NAME = "dev-loyalty-reviews"
 
-# Fixed configuration
+# Fixed configuration (used by connect_to_branch())
 db_schema = "ecommerce"
 min_cu = 0.5
 max_cu = 4.0
@@ -519,7 +811,7 @@ conn_loyalty.close()
 # MAGIC ### Task A-4: Seed Product Reviews on the Branch
 # MAGIC
 # MAGIC Developer A also seeds customer reviews collected from beta testers. These reviews
-# MAGIC will be promoted to production along with the loyalty features in Lab 6.2 — giving
+# MAGIC will be promoted to production along with the loyalty features in Lab 6 — giving
 # MAGIC the storefront star ratings and customer feedback.
 
 # COMMAND ----------
@@ -632,295 +924,23 @@ print("=" * 60)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Perform checks to validate `loyalty_members` table does **not exist** in Production
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ---
-# MAGIC ## Developer B — Global Team
-# MAGIC
-# MAGIC **Goal:** Refactor the `orders` table to support true multi-currency by replacing the `currency` varchar column with a foreign key to a new `exchange_rates` table.
-# MAGIC
-# MAGIC This is a **breaking schema change** — it would have caused a conflict with Developer A's work if they shared a database. With Lakebase branching, it's completely isolated.
-# MAGIC
-# MAGIC ### Task B-1: Create Branch `modify-orders`
-
-# COMMAND ----------
-
-from databricks.sdk.service.postgres import Branch, BranchSpec, Duration
-
-BRANCH_NAMEV2 = "modify-orders"
-
-# Clean up from previous runs
-try:
-    w.postgres.delete_branch(name=f"projects/{project_name}/branches/{BRANCH_NAMEV2}").wait()
-    print(f"🧹 Cleaned up existing branch '{BRANCH_NAMEV2}'")
-except Exception:
-    pass
-
-# Create your feature branch
-print(f"\n🔄 Creating branch '{BRANCH_NAMEV2}' from production...")
-w.postgres.create_branch(
-    parent=f"projects/{project_name}",
-    branch=Branch(spec=BranchSpec(
-        source_branch=prod_branch_name,
-        ttl=Duration(seconds=172800)  # 48-hour TTL
-    )),
-    branch_id=BRANCH_NAMEV2
-).wait()
-print(f"✅ Branch '{BRANCH_NAMEV2}' created!")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Task B-2: Create the `exchange_rates` Table
-# MAGIC
-# MAGIC Developer B first creates the reference table that the new foreign key will point to.
-
-# COMMAND ----------
-
-# connect to orders branch
-conn_orders, conn_host, conn_endpoint = connect_to_branch('modify-orders')
-
-# COMMAND ----------
-
-print("🔧 Developer B: Building multi-currency support in 'modify-orders' branch...\n")
-
-# create exchange_rates table
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    CREATE TABLE IF NOT EXISTS {db_schema}.exchange_rates (
-        id              SERIAL PRIMARY KEY,
-        currency_code   CHAR(3)         UNIQUE NOT NULL,
-        currency_name   VARCHAR(100)    NOT NULL,
-        rate_to_usd     NUMERIC(12, 6)  NOT NULL,
-        last_updated    TIMESTAMP       NOT NULL DEFAULT NOW()
-    );
-""")
-
-# insert data into the exchange_rates table
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    INSERT INTO {db_schema}.exchange_rates (currency_code, currency_name, rate_to_usd) VALUES
-        ('USD', 'US Dollar',          1.000000),
-        ('EUR', 'Euro',               1.085000),
-        ('GBP', 'British Pound',      1.265000),
-        ('JPY', 'Japanese Yen',       0.006700),
-        ('AED', 'UAE Dirham',         0.272300),
-        ('INR', 'Indian Rupee',       0.012000),
-        ('BRL', 'Brazilian Real',     0.200000),
-        ('CNY', 'Chinese Yuan',       0.138000)
-    ON CONFLICT (currency_code) DO NOTHING;
-""")
-
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    SELECT currency_code, currency_name, rate_to_usd
-    FROM {db_schema}.exchange_rates ORDER BY currency_code;
-""")
-    cols, rows = [d[0] for d in cur.description], cur.fetchall()
-print("✅ Created 'exchange_rates' table with live rates:")
-print_table(cols, rows)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Task B-3: Migrate `orders.currency` to a Foreign Key
-# MAGIC
-# MAGIC Developer B adds a new FK column `currency_id`, migrates data from the old `currency` varchar, and can then drop the old column. This migration is entirely contained within the `modify-orders` branch.
-
-# COMMAND ----------
-
-print("🔧 Migrating orders.currency varchar → FK to exchange_rates...\n")
-
-# Step 1: Add new FK column
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    ALTER TABLE {db_schema}.orders
-    ADD COLUMN IF NOT EXISTS currency_id INT REFERENCES {db_schema}.exchange_rates(id);
-""")
-
-# Step 2: Populate FK from existing currency codes
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    UPDATE {db_schema}.orders o
-    SET currency_id = er.id
-    FROM {db_schema}.exchange_rates er
-    WHERE er.currency_code = o.currency;
-""")
-
-# Step 3: Make the FK NOT NULL (all rows have been migrated)
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-        ALTER TABLE {db_schema}.orders ALTER COLUMN currency_id SET NOT NULL;
-""")
-
-# Step 4: Drop the old varchar column
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-        ALTER TABLE {db_schema}.orders DROP COLUMN currency;
-""")
-
-print("✅ Migration complete. Lets verifying the result...\n")
-
-# COMMAND ----------
-
-print("Verifying the result...\n")
-
-with conn_orders.cursor() as cur:
-    cur.execute(f"""
-    SELECT o.id, u.name AS customer, p.name AS product,
-           o.quantity, o.total,
-           er.currency_code, er.rate_to_usd,
-           ROUND(o.total * er.rate_to_usd, 2) AS total_usd
-    FROM {db_schema}.orders o
-    JOIN {db_schema}.customers         u  ON u.id  = o.customer_id
-    JOIN {db_schema}.products      p  ON p.id  = o.product_id
-    JOIN {db_schema}.exchange_rates er ON er.id = o.currency_id
-    ORDER BY o.id
-    LIMIT 10;
-""")
-    cols, rows = [d[0] for d in cur.description], cur.fetchall()
-print("📊 Orders with normalised currency FK (modify-orders branch):")
-print_table(cols, rows)
-
-# Confirm production still has varchar currency column
-conn_prod, conn_host, conn_endpoint = connect_to_branch('production')
-with conn_prod.cursor() as cur:
-    cur.execute(f"""
-    SELECT column_name, data_type
-    FROM information_schema.columns
-    WHERE table_schema = '{db_schema}' AND table_name = 'orders'
-    ORDER BY ordinal_position;
-""")
-    cols2, rows2 = [d[0] for d in cur.description], cur.fetchall()
-print("\n📋 'currency' column in orders table in PRODUCTION (still has varchar currency):")
-print_table(cols2, rows2)
-
-conn_orders.close()
-conn_prod.close()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ---
-# MAGIC ## Developer C — Performance Team
-# MAGIC
-# MAGIC **Goal:** Create indexes on the `products` table to handle the high-traffic surge expected during the Spring Sale. Under load, full table scans on `products` would be catastrophic.
-# MAGIC
-# MAGIC ### Task C-1: Create Branch `add-index`
-
-# COMMAND ----------
-
-BRANCH_NAMEV3 = "add-index"
-
-# Fixed configuration
-db_schema = "ecommerce"
-min_cu = 0.5
-max_cu = 4.0
-suspend_timeout_seconds = 1800
-
-# Clean up from previous runs
-try:
-    w.postgres.delete_branch(name=f"projects/{project_name}/branches/{BRANCH_NAMEV3}").wait()
-    print(f"🧹 Cleaned up existing branch '{BRANCH_NAMEV3}'")
-except Exception:
-    pass
-
-# Create your feature branch
-print(f"\n🔄 Creating branch '{BRANCH_NAMEV3}' from production...")
-w.postgres.create_branch(
-    parent=f"projects/{project_name}",
-    branch=Branch(spec=BranchSpec(
-        source_branch=prod_branch_name,
-        ttl=Duration(seconds=172800)  # 48-hour TTL
-    )),
-    branch_id=BRANCH_NAMEV3
-).wait()
-print(f"✅ Branch '{BRANCH_NAMEV3}' created!")
-
-# COMMAND ----------
-
-conn_index, conn_host, conn_endpoint = connect_to_branch('add-index')
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Task C-2: Create Performance Indexes on `products`
-# MAGIC
-# MAGIC Developer C creates three indexes on the `add-index` branch:
-# MAGIC - **`idx_products_category`** — speeds up category browsing (most common query pattern)
-# MAGIC - **`idx_products_price`** — speeds up price-range filter queries
-# MAGIC - **`idx_products_stock_qty`** — speeds up "in stock" filter queries
-# MAGIC
-# MAGIC These can be validated on the branch before promoting to production.
-
-# COMMAND ----------
-
-print("🔧 Developer C: Creating performance indexes on 'add-index' branch...\n")
-
-index_statements = [
-    ("idx_products_price",
-     f"CREATE INDEX IF NOT EXISTS idx_products_price ON {db_schema}.products (price);",
-     "Price-range filter queries")
-]
-
-for name, sql, purpose in index_statements:
-    with conn_index.cursor() as cur:
-        cur.execute(sql)
-    print(f"   ✅ Created: {name} ({purpose})")
-
-# Verify indexes exist
-with conn_index.cursor() as cur:
-    cur.execute(f"""
-    SELECT indexname, indexdef
-    FROM pg_indexes
-    WHERE schemaname = '{db_schema}' AND tablename = 'products'
-    ORDER BY indexname;
-""")
-    cols, rows = [d[0] for d in cur.description], cur.fetchall()
-print("\n📋 Indexes on 'products' in add-index branch:")
-print_table(cols, rows)
-
-# Confirm production has NO extra indexes yet
-conn_prod, conn_host, conn_endpoint = connect_to_branch('production')
-with conn_prod.cursor() as cur:
-    cur.execute(f"""
-    SELECT indexname, indexdef
-    FROM pg_indexes
-    WHERE schemaname = 'public' AND tablename = 'products'
-    ORDER BY indexname;
-""")
-    cols2, rows2 = [d[0] for d in cur.description], cur.fetchall()
-print("\n📋 Indexes on 'products' in PRODUCTION branch (no custom indexes yet):")
-print_table(cols2, rows2)
-
-conn_index.close()
-conn_prod.close()
-
-print("\n" + "=" * 60)
-print("🎯 SUMMARY: Three developers worked in PARALLEL with zero conflicts.")
-print("   Each branch has isolated changes ready for review & merge.")
-print("=" * 60)
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC Each developer created an isolated **branch** to accomplish their tasks in an isolated environment. They worked independently, tested their changes, and the production branch was never touched during development.
+# MAGIC Developer A created an isolated **branch** to accomplish their tasks in a production-like environment. They worked independently, tested their changes, and the production branch was never touched during development.
 # MAGIC
 # MAGIC | Developer | Team | Branch | Task |
 # MAGIC |-----------|------|--------|------|
 # MAGIC | Developer A | Loyalty Team | `dev-loyalty-reviews` | Add `loyalty_points` column + `loyalty_members` + `reviews` tables |
-# MAGIC | Developer B | Global Team | `modify-orders` | Add `exchange_rates` table + convert `currency` to a FK |
-# MAGIC | Developer C | Performance Team | `add-index` | Add indexes to `products` for Spring Sale traffic surge |
+# MAGIC
+# MAGIC > On a real team, Developers B and C would spin up their own branches (e.g. `modify-orders`, `add-index`) from the same production branch at the same time — each fully isolated — while Developer A works on `dev-loyalty-reviews`. That's the whole point of branching: parallel work with zero conflicts.
 # MAGIC
 # MAGIC **Key concepts demonstrated:**
 # MAGIC - **Copy-on-write** — branches are instant, no data duplication
 # MAGIC - **Expiring branches** — 48-hour TTL for automatic cleanup
-# MAGIC - **Schema isolation** — breaking changes on one branch don't affect production or other branches
+# MAGIC - **Schema isolation** — changes on a branch don't affect production or other branches
 # MAGIC - **Per-developer setup** — the branching strategy pattern in action
 # MAGIC
-# MAGIC **Next:** In Lab 6.2, we'll promote Developer A's changes to production using the **Migration Replay** pattern, and explore the **Schema Diff** tool.
+# MAGIC DataCart's shared-dev-database drift and weekend refreshes are gone — every developer now works on an isolated branch that's production-like from the first second.
+# MAGIC
+# MAGIC **Next:** In Lab 6, we'll promote Developer A's changes to production using the **Migration Replay** pattern, and explore the **Schema Diff** tool.
+

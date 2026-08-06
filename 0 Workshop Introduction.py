@@ -56,13 +56,9 @@
 # MAGIC
 # MAGIC The marketing team has prepared Spring Sale promotions — product discounts, sale badges, and limited-time offers — in a Delta table in the data lakehouse. Using **Lakebase Synced Tables**, these promotions are pushed to the production database and instantly appear on the storefront with sale badges and discounted prices — without any application code changes.
 # MAGIC
-# MAGIC #### The Unity Catalog Federation Scenario
+# MAGIC #### The Lakebase CDF Scenario
 # MAGIC
-# MAGIC The analytics team wants to join live order data from Lakebase with marketing-campaign Delta tables for real-time attribution dashboards — without standing up another ETL pipeline. By **registering Lakebase as a Unity Catalog foreign catalog**, any SQL warehouse can query live OLTP data with full UC governance, and join it against Delta in a single statement.
-# MAGIC
-# MAGIC #### The Lakehouse Sync Scenario
-# MAGIC
-# MAGIC The BI and ML teams need to run heavy analytical workloads against OLTP data without putting load on the storefront database. **Lakehouse Sync** continuously mirrors Lakebase tables into Delta inside Unity Catalog, so analytics consumers hit columnar lakehouse storage with photon performance while the storefront keeps serving customers.
+# MAGIC The BI and ML teams need to run heavy analytical workloads against OLTP data without putting load on the storefront database. **Lakebase CDF** continuously mirrors Lakebase tables into Delta inside Unity Catalog, so analytics consumers hit columnar lakehouse storage with photon performance while the storefront keeps serving customers.
 # MAGIC
 # MAGIC #### Parallel Development
 # MAGIC
@@ -78,7 +74,7 @@
 # MAGIC
 # MAGIC During the final Spring Sale deployment, a DevOps engineer accidentally executes `DROP TABLE orders CASCADE;` instead of dropping a temporary staging table. The production storefront immediately begins throwing errors — customers cannot view their orders or complete purchases, and every second of downtime means thousands of dollars in lost revenue.
 # MAGIC
-# MAGIC In a traditional database, the team would need to find the last nightly backup, provision a new instance, restore the data (which could take hours), and replay logs. With **Lakebase PITR**, the process to handle this is much smoother — and the downstream UC foreign catalog and Lakehouse Sync pipeline both heal automatically once production is restored.
+# MAGIC In a traditional database, the team would need to find the last nightly backup, provision a new instance, restore the data (which could take hours), and replay logs. With **Lakebase PITR**, the process to handle this is much smoother — and the downstream Lakebase CDF pipeline heals automatically once production is restored.
 # MAGIC
 # MAGIC ### The DataCart Storefront
 # MAGIC
@@ -86,29 +82,26 @@
 # MAGIC
 # MAGIC | Lab | What Happens |
 # MAGIC |-----|-------------|
-# MAGIC | **1.1 Setup** | Basic storefront — products, stock, cart, orders (no ratings yet) |
-# MAGIC | **2.1 Permissions** | Storefront comes online once the service principal has database access |
-# MAGIC | **3.1 Reverse ETL** | Sale badges, discount prices, "Spring Sale Deals" section appear |
-# MAGIC | **4.1 UC Registration** | Lakebase becomes queryable from any SQL warehouse via a UC foreign catalog |
-# MAGIC | **5.1 Lakehouse Sync** | Lakebase tables continuously mirror to Delta in Unity Catalog |
-# MAGIC | **6.1 Parallel Dev** | No storefront change — branches are isolated from production |
-# MAGIC | **6.2 Schema to Prod** | Star ratings, loyalty badges, "Earn pts" labels appear |
-# MAGIC | **6.3 Branch Reset** | Priority badges on orders, verified badge in navbar |
-# MAGIC | **7.1 PITR Disaster** | Orders page breaks → gracefully degrades → recovers after PITR |
+# MAGIC | **1 Setup** | Basic storefront — products, stock, cart, orders (no ratings yet) |
+# MAGIC | **2 Permissions** | Storefront comes online once the service principal has database access |
+# MAGIC | **3 Reverse ETL** | Sale badges, discount prices, "Spring Sale Deals" section appear |
+# MAGIC | **4 Lakebase CDF** | Lakebase tables continuously mirror to Delta in Unity Catalog |
+# MAGIC | **5 Parallel Dev** | No storefront change — branches are isolated from production |
+# MAGIC | **6 Schema to Prod** | Star ratings, loyalty badges, "Earn pts" labels appear |
+# MAGIC | **7 PITR Disaster** | Orders page breaks → gracefully degrades → recovers after PITR |
 # MAGIC
 # MAGIC > The storefront auto-detects schema changes every 30 seconds. No redeployment needed.
 # MAGIC
 # MAGIC ### This Workshop
 # MAGIC
-# MAGIC This workshop places you in the role of a database engineer at **DataCart**, a rapidly growing global e-commerce platform preparing for a major "Spring Sale" launch. You'll experience firsthand how Lakebase reverse ETL, UC registration, Lakehouse Sync, branching, and PITR address real-world development and operational challenges.
+# MAGIC This workshop places you in the role of a database engineer at **DataCart**, a rapidly growing global e-commerce platform preparing for a major "Spring Sale" launch. You'll experience firsthand how Lakebase reverse ETL, Lakebase CDF, branching, and PITR address real-world development and operational challenges.
 # MAGIC
 # MAGIC ### Key Learning Objectives
 # MAGIC
 # MAGIC | Topic | Description |
 # MAGIC |---|---|
 # MAGIC | **Reverse ETL (UC → Lakebase)** | Serving lakehouse analytics data to applications via synced tables |
-# MAGIC | **UC Registration (Lakehouse Federation)** | Querying live Lakebase data from any UC SQL warehouse, with governance |
-# MAGIC | **Lakehouse Sync (Lakebase → UC)** | Continuously mirroring OLTP tables to Delta for analytical workloads |
+# MAGIC | **Lakebase CDF (Lakebase → UC)** | Continuously mirroring OLTP tables to Delta for analytical workloads |
 # MAGIC | **Branching** | Creating isolated environments for parallel schema evolution across multiple developer teams |
 # MAGIC | **Point-in-Time Recovery** | Recovering from catastrophic human error without downtime using PITR |
 # MAGIC | **Roles & Permissions** | Managing access control across branches to enforce governance |
