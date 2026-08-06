@@ -1,20 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Optional: Create the Lakebase Project and Storefront App via SDK (No DABs)
+# MAGIC # 0.1 — Create the Lakebase Project and Storefront App via SDK
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ## When to use this notebook
+# MAGIC ## Set up your workshop environment
 # MAGIC
-# MAGIC The default workshop path uses Declarative Automation Bundles (DABs) to provision the Lakebase
-# MAGIC Autoscaling project, the storefront app, and the binding between them in one shot. **That's
-# MAGIC the recommended path.**
+# MAGIC Run this notebook **first** to provision everything the rest of the labs need: your Lakebase
+# MAGIC Autoscaling project, the DataCart Storefront app, and the binding between them — all via the
+# MAGIC Databricks SDK, with no extra tooling required.
 # MAGIC
-# MAGIC Use this notebook **only if** you can't or don't want to deploy with DABs — for example:
-# MAGIC
-# MAGIC - Your workspace doesn't have the Workspace Files / serverless compute features required by the workspace-UI deploy
-# MAGIC - You don't have the Databricks CLI installed and don't want to install it
-# MAGIC - You want to step through the SDK calls yourself to learn the underlying API
+# MAGIC > **Already provisioned?** If your Lakebase project and storefront app were set up for you ahead
+# MAGIC > of time (e.g. via a Declarative Automation Bundle), you can skim this notebook and go straight
+# MAGIC > to **Lab 1** — re-running these steps is harmless and idempotent.
 # MAGIC
 # MAGIC ## What this notebook does
 # MAGIC
@@ -28,7 +26,7 @@
 # MAGIC **Deploy** in the workspace UI — see the section at the bottom.
 # MAGIC
 # MAGIC > **Naming compatibility.** The project and app names match the DABs version exactly, so
-# MAGIC > Lab 1.1 (project discovery) and Lab 2.1 (app discovery + permission grants) work with no
+# MAGIC > Lab 1 (project discovery) and Lab 2 (app discovery + permission grants) work with no
 # MAGIC > further configuration.
 # MAGIC
 # MAGIC > **Docs**: [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Databricks Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) | [App resources](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/configuration#--resources)
@@ -155,7 +153,7 @@ print(f"   Database: databricks_postgres")
 # MAGIC in a single SDK call. Binding the project as a resource is what gets the platform to inject
 # MAGIC `PGHOST`, `PGUSER`, `PGPORT`, and `PGDATABASE` into the app's environment on the next deploy.
 # MAGIC
-# MAGIC The app name pattern (`storefront-<your-user-id>`) matches the DAB version, so Lab 2.1
+# MAGIC The app name pattern (`storefront-<your-user-id>`) matches the DAB version, so Lab 2
 # MAGIC discovers it the same way it would after a `bundle deploy`.
 
 # COMMAND ----------
@@ -233,7 +231,7 @@ print(f"🔗 App in workspace UI: {workspace_host}/apps/{app_name}")
 # MAGIC ## You're done with the SDK setup
 # MAGIC
 # MAGIC The Lakebase project, the storefront app, and the binding between them are all in place.
-# MAGIC The labs (Lab 1.1 onward) will discover them automatically.
+# MAGIC The labs (Lab 1 onward) will discover them automatically.
 # MAGIC
 # MAGIC There's **one** manual step left — pointing the app at the source code and clicking Deploy.
 # MAGIC
@@ -246,11 +244,11 @@ print(f"🔗 App in workspace UI: {workspace_host}/apps/{app_name}")
 # MAGIC 2. Click the **Deploy** button.
 # MAGIC 3. Set the source path to wherever you have the `datacart-storefront/` source files in
 # MAGIC    your workspace, e.g.
-# MAGIC    `/Workspace/Users/<your-email>/lakebase-in-a-box-workshop-data-centric/datacart-storefront`.
+# MAGIC    `/Workspace/Users/<your-email>/Lakebase_Workshop/datacart-storefront`.
 # MAGIC 4. Click **Deploy** again. The app starts and shows **"Loading…"** until you grant the SP
-# MAGIC    database access in Lab 2.1 — that's expected.
+# MAGIC    database access in Lab 2 — that's expected.
 # MAGIC
-# MAGIC From here, continue the workshop with **Lab 1.1**.
+# MAGIC **Next:** continue the workshop with **Lab 1 — Discover and Seed the Lakebase Project**.
 
 # COMMAND ----------
 

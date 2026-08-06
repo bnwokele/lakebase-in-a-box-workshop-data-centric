@@ -1,11 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Lab 1.1: Discover and Seed the Lakebase Autoscaling Project
+# MAGIC # Lab 1: Discover and Seed the Lakebase Autoscaling Project
 # MAGIC
 # MAGIC This notebook gives you a hands-on tour of your Lakebase Autoscaling project. You'll discover
-# MAGIC the project, connect via OAuth, seed an e-commerce schema, and explore Postgres system
-# MAGIC metadata — the same metadata your analytics tooling will see once we register Lakebase in
-# MAGIC Unity Catalog (Lab 4.1).
+# MAGIC the project, connect via OAuth, and seed an e-commerce schema that the rest of the workshop
+# MAGIC builds on.
+# MAGIC
+# MAGIC > **📍 DataCart's journey** — DataCart overprovisioned an expensive database sized for spiky peak traffic and paid for capacity that sat idle most of the time. This lab stands up a **serverless Lakebase project** that autoscales on demand and scales to zero when idle — so they pay only for what they use.
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC
@@ -14,18 +15,16 @@
 # MAGIC 2. **Discover** your Lakebase project in the workspace
 # MAGIC 3. **Connect** to a Lakebase database using OAuth token authentication
 # MAGIC 4. **Create and populate** PostgreSQL tables using native PL/pgSQL with features like SERIAL keys and constraints
-# MAGIC 5. **Explore PostgreSQL system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements`
-# MAGIC 6. **Understand** how Lakebase becomes addressable from the Lakehouse (direct connect, UC registration, Lakehouse Sync)
+# MAGIC 5. **Understand** how Lakebase becomes addressable from the Lakehouse (direct connect, UC registration, Lakebase CDF)
 # MAGIC
 # MAGIC ## What This Notebook Does
 # MAGIC 1. Discovers your Lakebase project
 # MAGIC 2. Connects via OAuth token authentication (fully automated)
 # MAGIC 3. Seeds 5 tables with realistic e-commerce data
-# MAGIC 4. Explores PostgreSQL system metadata (`pg_catalog`, `information_schema`, `pg_stat_statements`)
-# MAGIC 5. Verifies everything is ready for the remaining workshop labs
+# MAGIC 4. Verifies everything is ready for the remaining workshop labs
 # MAGIC
 # MAGIC > **Setup expectation**: Your Lakebase project and the DataCart Storefront app should already be
-# MAGIC > set up before running this notebook. If they aren't, see `WORKSHOP_SETUP.md`.
+# MAGIC > set up before running this notebook. If they aren't, see the **Create Lakebase Project & App (using SDK)** notebook.
 # MAGIC
 # MAGIC > **Docs**: [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/) | [Manage branches](https://docs.databricks.com/aws/en/oltp/projects/manage-branches) | [API Reference](https://docs.databricks.com/api/workspace/postgres)
 
@@ -197,7 +196,7 @@ print(f"   Both names point at the same project.")
 # MAGIC - A **Postgres role** for your Databricks identity (the project owner)
 # MAGIC - A default **`databricks_postgres`** database
 # MAGIC
-# MAGIC > If the project doesn't exist yet, see `WORKSHOP_SETUP.md` for setup instructions.
+# MAGIC > If the project doesn't exist yet, see the **Create Lakebase Project & App (using SDK)** notebook for setup instructions.
 # MAGIC
 # MAGIC > **Docs:** [Lakebase Autoscaling Projects](https://docs.databricks.com/aws/en/oltp/projects/)
 
@@ -212,7 +211,7 @@ project_obj = next(
 
 if project_obj is None:
     raise RuntimeError(
-        f"Project '{project_name}' not found. See WORKSHOP_SETUP.md for setup instructions."
+        f"Project '{project_name}' not found. Run the 'Create Lakebase Project & App (using SDK)' notebook for setup instructions."
     )
 
 project_uid = project_obj.uid
@@ -707,153 +706,7 @@ with conn.cursor() as cur:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 7: Explore PostgreSQL System Metadata
-# MAGIC
-# MAGIC One of the key advantages of Lakebase is that it behaves **exactly like standard PostgreSQL**. Let's verify this by exploring the system metadata — the same `pg_catalog` and `information_schema` views you'd use in any PostgreSQL database.
-# MAGIC
-# MAGIC This exploration demonstrates that Lakebase gives you a real PostgreSQL environment, not a proprietary abstraction.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 7a. Explore Available Schemas
-# MAGIC
-# MAGIC Every Lakebase database includes these standard PostgreSQL schemas:
-# MAGIC - **`__db_system`** — Databricks system metadata
-# MAGIC - **`information_schema`** — SQL standard metadata views
-# MAGIC - **`pg_catalog`** — PostgreSQL system catalog
-# MAGIC - **`pg_toast`** — Internal TOAST (The Oversized-Attribute Storage Technique) tables
-# MAGIC - **`public`** — Default user schema
-# MAGIC - **`ecommerce`** — The schema we just created
-
-# COMMAND ----------
-
-with conn.cursor() as cur:
-    cur.execute("""
-        SELECT schema_name
-        FROM information_schema.schemata
-        ORDER BY schema_name;
-    """)
-    schemas = cur.fetchall()
-
-print("📋 Available schemas in databricks_postgres:")
-for row in schemas:
-    print(f"   • {row[0]}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 7b. Query the PostgreSQL System Catalog (`pg_catalog`)
-# MAGIC
-# MAGIC The `pg_catalog` schema contains PostgreSQL internal system tables and views that provide metadata about database objects, users, and configuration. These are the same system tables you'd find in any standard PostgreSQL installation.
-
-# COMMAND ----------
-
-with conn.cursor() as cur:
-    cur.execute("""
-        SELECT schemaname, tablename, tableowner
-        FROM pg_tables
-        WHERE schemaname = 'pg_catalog'
-        ORDER BY tablename
-        LIMIT 15;
-    """)
-    rows = cur.fetchall()
-
-print("📋 Sample pg_catalog tables (first 15):")
-print(f"   {'Schema':<15} {'Table':<30} {'Owner'}")
-print(f"   {'-'*15} {'-'*30} {'-'*20}")
-for row in rows:
-    print(f"   {row[0]:<15} {row[1]:<30} {row[2]}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 7c. Query `information_schema`
-# MAGIC
-# MAGIC The `information_schema` provides standardized views of database metadata, making it easier to write portable queries across different database systems. Let's see what user-created tables exist.
-
-# COMMAND ----------
-
-with conn.cursor() as cur:
-    cur.execute("""
-        SELECT table_schema, table_name, table_type
-        FROM information_schema.tables
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', '__db_system', 'pg_toast')
-        ORDER BY table_schema, table_name;
-    """)
-    rows = cur.fetchall()
-
-print("📋 User tables via information_schema:")
-print(f"   {'Schema':<15} {'Table':<25} {'Type'}")
-print(f"   {'-'*15} {'-'*25} {'-'*15}")
-for row in rows:
-    print(f"   {row[0]:<15} {row[1]:<25} {row[2]}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 7d. Inspect Column Details
-# MAGIC
-# MAGIC Let's examine the column metadata for one of our tables to see the PostgreSQL-specific data types and constraints in action.
-
-# COMMAND ----------
-
-with conn.cursor() as cur:
-    cur.execute(f"""
-        SELECT column_name, data_type, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema = '{db_schema}' AND table_name = 'orders'
-        ORDER BY ordinal_position;
-    """)
-    rows = cur.fetchall()
-
-print(f"📋 Column details for {db_schema}.orders:")
-print(f"   {'Column':<15} {'Type':<20} {'Nullable':<10} {'Default'}")
-print(f"   {'-'*15} {'-'*20} {'-'*10} {'-'*30}")
-for row in rows:
-    default = str(row[3])[:30] if row[3] else ""
-    print(f"   {row[0]:<15} {row[1]:<20} {row[2]:<10} {default}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### 7e. Query Performance Stats (`pg_stat_statements`)
-# MAGIC
-# MAGIC `pg_stat_statements` records aggregate execution statistics for every distinct query the
-# MAGIC database has run — total calls, total time, mean time, rows returned. It's the single most
-# MAGIC useful view for finding slow queries on a Postgres server, and it's pre-installed on every
-# MAGIC Lakebase Autoscaling project.
-# MAGIC
-# MAGIC We'll come back to this in **Lab 8 — Monitoring**, but it's worth seeing now so you know
-# MAGIC the data is already accumulating.
-
-# COMMAND ----------
-
-# with conn.cursor() as cur:
-#     cur.execute("""
-#         SELECT
-#             substring(query, 1, 80) AS query_excerpt,
-#             calls,
-#             round(total_exec_time::numeric, 2) AS total_ms,
-#             round(mean_exec_time::numeric, 2) AS mean_ms,
-#             rows
-#         FROM pg_stat_statements
-#         WHERE query NOT LIKE '%pg_stat_statements%'
-#         ORDER BY total_exec_time DESC
-#         LIMIT 5;
-#     """)
-#     rows = cur.fetchall()
-
-# print("📋 Top 5 queries by total execution time (pg_stat_statements):")
-# print(f"   {'Query (first 80 chars)':<82} {'Calls':>6} {'Total ms':>10} {'Mean ms':>8} {'Rows':>6}")
-# print(f"   {'-'*82} {'-'*6} {'-'*10} {'-'*8} {'-'*6}")
-# for row in rows:
-#     print(f"   {row[0]:<82} {row[1]:>6} {row[2]:>10} {row[3]:>8} {row[4]:>6}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Step 8: Verify Setup
+# MAGIC ## Step 7: Verify Setup
 # MAGIC
 # MAGIC Let's confirm everything is in place — tables exist, data is populated,
 # MAGIC and the project is ready for the remaining workshop labs.
@@ -950,8 +803,6 @@ print("=" * 60)
 # MAGIC
 # MAGIC After registration, query your Lakebase data using SQL warehouses or any Unity Catalog-connected tool.
 # MAGIC
-# MAGIC > **You'll do this hands-on in Lab 4.1** (Register Lakebase in Unity Catalog) — including a federated join scenario that's the entire reason data-centric users care about this feature.
-# MAGIC
 # MAGIC <div style="
 # MAGIC   border-left: 4px solid #ff9800;
 # MAGIC   background: #fff3e0;
@@ -1007,11 +858,14 @@ print("=" * 60)
 # MAGIC - **Discovered** your Lakebase PostgreSQL 17 project
 # MAGIC - **Connected** using OAuth token-based authentication — no passwords needed
 # MAGIC - **Created and populated** 5 PostgreSQL tables with realistic e-commerce data, using native PL/pgSQL features (SERIAL keys, CHECK constraints, foreign keys, cascading deletes)
-# MAGIC - **Explored system metadata** through `pg_catalog`, `information_schema`, and `pg_stat_statements` — confirming Lakebase is standard PostgreSQL
 # MAGIC - **Understood** how to query Lakebase from the Lakehouse via direct connection and Unity Catalog registration
 # MAGIC
-# MAGIC Your project is now ready for the remaining workshop labs on **reverse ETL**, **UC registration**,
-# MAGIC **Lakehouse Sync**, **branching**, **schema migration**, **branch reset**, and **PITR**.
+# MAGIC DataCart is now off its overprovisioned, always-on database and onto serverless Lakebase — paying only for the compute it actually uses.
+# MAGIC
+# MAGIC Your project is now ready for the remaining workshop labs on **reverse ETL**,
+# MAGIC **Lakebase CDF**, **branching**, and **schema migration**.
+# MAGIC
+# MAGIC **Next:** continue to **Lab 2 — Roles, Permissions, and Connecting the Storefront**.
 
 # COMMAND ----------
 

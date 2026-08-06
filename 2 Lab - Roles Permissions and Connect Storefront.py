@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Lab 2.1: Roles, Permissions, and Connecting the Storefront to Lakebase
+# MAGIC # Lab 2: Roles, Permissions, and Connecting the Storefront to Lakebase
 # MAGIC
 # MAGIC ---
 # MAGIC
@@ -20,7 +20,7 @@
 # MAGIC
 # MAGIC ## Where We Are
 # MAGIC
-# MAGIC 1. **Lab 1.1** discovered your Lakebase Autoscaling project and seeded the `ecommerce` schema
+# MAGIC 1. **Lab 1** discovered your Lakebase Autoscaling project and seeded the `ecommerce` schema
 # MAGIC    with 5 tables: `customers`, `products`, `inventory`, `orders`, and `order_items`.
 # MAGIC
 # MAGIC 2. **The DataCart Storefront app** is already deployed and running as a Databricks App, but
@@ -452,7 +452,7 @@ for r in roles:
 # MAGIC | `ALTER DEFAULT PRIVILEGES` | Ensures future tables (reviews, loyalty_members, promotions) are automatically accessible |
 # MAGIC
 # MAGIC > The `ALTER DEFAULT PRIVILEGES` grants are important — as the workshop progresses
-# MAGIC > and new tables are created (promotions in Lab 3.1, reviews in Lab 6.2), the SP
+# MAGIC > and new tables are created (reviews in Lab 6, promotions in Lab 3), the SP
 # MAGIC > will automatically have access without needing to re-run this notebook.
 
 # COMMAND ----------
@@ -585,7 +585,7 @@ for m in memberships:
 # MAGIC %md
 # MAGIC ## Step 8: Grant Roles on Dev Branches (Optional)
 # MAGIC
-# MAGIC If you've already created branches in Labs 3.1-3.4, the SP needs roles on those too.
+# MAGIC If you've already created branches in Lab 5, the SP needs roles on those too.
 # MAGIC This is because each branch has its own independent set of Postgres roles and grants.
 # MAGIC
 # MAGIC > You can re-run this cell any time after creating new branches.
@@ -635,7 +635,7 @@ for m in memberships:
 #         print(f"   ❌ Failed on {branch_id}: {e}")
 
 # if granted_count == 0:
-#     print("ℹ️ No dev branches found (only production). This is expected before Labs 3.1-3.4.")
+#     print("ℹ️ No dev branches found (only production). This is expected before Lab 5.")
 # else:
 #     print(f"\n✅ Granted roles on {granted_count} branch(es)")
 
@@ -675,11 +675,13 @@ conn.close()
 # MAGIC The DataCart Storefront is now connected and ready. As you run through the remaining
 # MAGIC labs, the storefront will **evolve automatically**:
 # MAGIC
-# MAGIC - **Lab 3.1** — Sale badges and discount prices appear via Reverse ETL
-# MAGIC - **Labs 4.1 / 5.1** — UC foreign catalog and Lakehouse Sync go live (no storefront change; analytics surface lights up)
-# MAGIC - **Lab 6.2** — Star ratings, loyalty badges, and "Earn pts" labels appear
-# MAGIC - **Lab 6.3** — Priority badges on orders, verified badge in navbar
-# MAGIC - **Lab 7.1** — Orders page breaks during the PITR disaster, then recovers
+# MAGIC - **Lab 3** — Sale badges and discount prices appear via Reverse ETL
+# MAGIC - **Lab 4** — Lakebase CDF goes live (no storefront change; analytics surface lights up)
+# MAGIC - **Lab 5** — Parallel development on isolated branches (no storefront change)
+# MAGIC - **Lab 6** — Star ratings, loyalty badges, and "Earn pts" labels appear after schema promotion
+# MAGIC - **Lab 7** — Orders page breaks during the PITR disaster, then recovers
 # MAGIC
 # MAGIC > The `ALTER DEFAULT PRIVILEGES` grants ensure the SP can access new tables
 # MAGIC > created in later labs without needing to re-run this notebook.
+# MAGIC
+# MAGIC **Next:** continue to **Lab 3 — Reverse ETL with Synced Tables (UC to Lakebase)**.
